@@ -80,7 +80,8 @@ test "the built wasm module imports nothing and exports its memory" {
         if (id == 7) exports = wasm[i..][0..size];
         i += size;
     }
-    for ([_][]const u8{ "memory", "memory_ptr", "reset", "step", "state" }) |name| {
-        try std.testing.expect(std.mem.find(u8, exports, name) != null);
+    // Each export is a length-prefixed name followed by its kind, 0 for a function and 2 for memory.
+    for ([_][]const u8{ "\x06memory\x02", "\x0Amemory_ptr\x00", "\x05reset\x00", "\x04step\x00", "\x05state\x00" }) |entry| {
+        try std.testing.expect(std.mem.find(u8, exports, entry) != null);
     }
 }

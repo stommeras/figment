@@ -61,12 +61,12 @@ pub const Machine = struct {
         const result: u8, const carry: u1 = switch (op) {
             0 => @addWithOverflow(x, b),
             1 => adc: {
-                const sum = @as(u9, x) + b + self.c;
+                const sum = @as(u9, x) +% b +% self.c;
                 break :adc .{ @truncate(sum), @truncate(sum >> 8) };
             },
             2 => @subWithOverflow(x, b),
             3 => sbc: {
-                const amount = @as(u9, b) + self.c;
+                const amount = @as(u9, b) +% self.c;
                 break :sbc .{ @truncate(@as(u9, x) -% amount), @intFromBool(amount > x) };
             },
         };
@@ -155,7 +155,12 @@ test "HLT: running off the end of a program halts in zeroed memory" {
 }
 
 test "fault: an unknown opcode faults with PC on the opcode and nothing changed" {
-    for ([_]u8{ 0x01, 0x12, 0x24, 0x34, 0xFF }) |opcode| {
+    for (0..256) |i| {
+        const opcode: u8 = @intCast(i);
+        switch (opcode) {
+            0x00, 0x10, 0x11, 0x20...0x23, 0x30...0x33 => continue,
+            else => {},
+        }
         var m = load(&.{ 0x10, 0x10, 0x07, opcode, 0x12, 0x00 });
         try run(&m);
         try std.testing.expectEqual(State.faulted, m.state);
@@ -184,12 +189,12 @@ test "LDI loads every register and ignores the low nibble" {
 }
 
 test "LDI and MOV leave the flags alone" {
-    var m = load(&.{ 0x10, 0x10, 0x05, 0x11, 0x21, 0x00 });
+    var m = load(&.{ 0x10, 0xF0, 0x05, 0x11, 0x0F, 0x00 });
     m.z = 1;
     m.c = 1;
     try run(&m);
     try expectFlags(m, 1, 1);
-    m = load(&.{ 0x10, 0x10, 0x00, 0x11, 0x21, 0x00 });
+    m = load(&.{ 0x10, 0xF0, 0x00, 0x11, 0x0F, 0x00 });
     try run(&m);
     try expectFlags(m, 0, 0);
 }
@@ -235,33 +240,31 @@ const cases = [_]Case{
     .{ .op = 3, .a = 255, .b = 255, .c_in = 1, .result = 255, .z = 0, .c = 1 },
 };
 
-fn runCase(case: Case, immediate: bool) !Machine {
+fn checkCase(case: Case, immediate: bool) !void {
     var m = load(&.{});
     m.r[1] = case.a;
     m.r[2] = case.b;
     m.c = case.c_in;
     const program: []const u8 = if (immediate)
-        &.{ 0x30 + case.op, 0x10, case.b, 0x00 }
+        &.{ 0x30 + case.op, 0x1F, case.b, 0x00 }
     else
         &.{ 0x20 + case.op, 0x12, 0x00 };
     @memcpy(m.memory[0..program.len], program);
     try run(&m);
     try std.testing.expectEqual(State.halted, m.state);
     try std.testing.expectEqual(program.len - 1, m.pc);
-    return m;
+    try std.testing.expectEqual(case.result, m.r[1]);
+    try std.testing.expectEqual(case.b, m.r[2]);
+    try expectFlags(m, case.z, case.c);
 }
 
 test "ADD, ADC, SUB and SBC give the results and flags in SPEC.md, in both forms" {
     for (cases) |case| {
         for ([_]bool{ false, true }) |immediate| {
-            const m = runCase(case, immediate) catch |err| {
+            checkCase(case, immediate) catch |err| {
                 std.debug.print("op {d}, a {d}, b {d}, C {d}, immediate {}\n", .{ case.op, case.a, case.b, case.c_in, immediate });
                 return err;
             };
-            errdefer std.debug.print("op {d}, a {d}, b {d}, C {d}, immediate {}\n", .{ case.op, case.a, case.b, case.c_in, immediate });
-            try std.testing.expectEqual(case.result, m.r[1]);
-            try std.testing.expectEqual(case.b, m.r[2]);
-            try expectFlags(m, case.z, case.c);
         }
     }
 }
@@ -303,6 +306,31 @@ test "aliasing: r0 and rF work as destination and source like any other register
     try std.testing.expectEqual(0, m.r[0xF]);
     try std.testing.expectEqual(1, m.r[0]);
     try expectFlags(m, 1, 1);
+}
+
+test "MOV and SUB read and write the registers their nibbles name" {
+    for (0..16) |i| {
+        for (0..16) |j| {
+            const a: u4 = @intCast(i);
+            const b: u4 = @intCast(j);
+            for ([_]u8{ 0x11, 0x22 }) |opcode| {
+                var m = load(&.{ opcode, @as(u8, a) << 4 | b, 0x00 });
+                for (&m.r, 0..) |*r, k| r.* = @truncate(17 * k + 3);
+                const before = m.r;
+                try run(&m);
+                const expected = if (opcode == 0x11) before[b] else before[a] -% before[b];
+                for (m.r, before, 0..) |value, old, k| try std.testing.expectEqual(if (k == a) expected else old, value);
+            }
+        }
+    }
+}
+
+test "a 16-bit subtract borrows from the high byte" {
+    var m = load(&.{ 0x10, 0x10, 0x02, 0x10, 0x20, 0x00, 0x10, 0x30, 0x00, 0x10, 0x40, 0x01, 0x22, 0x24, 0x23, 0x13, 0x00 });
+    try run(&m);
+    try std.testing.expectEqual(0x01, m.r[1]);
+    try std.testing.expectEqual(0xFF, m.r[2]);
+    try expectFlags(m, 0, 0);
 }
 
 test "the SPEC.md 16-bit add carries from the low byte into the high byte" {
