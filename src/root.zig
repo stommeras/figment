@@ -28,7 +28,6 @@ pub const Machine = struct {
     pub fn step(self: *Machine) void {
         if (self.state != .running) return;
 
-        // Fetch every operand, then move PC past the instruction, then execute.
         const opcode = self.memory[self.pc];
         const op1 = self.memory[self.pc +% 1];
         const op2 = self.memory[self.pc +% 2];
@@ -36,7 +35,7 @@ pub const Machine = struct {
         const b: u4 = @truncate(op1);
 
         switch (opcode) {
-            0x00 => self.state = .halted, // PC stays on the HLT
+            0x00 => self.state = .halted,
             0x10 => {
                 self.pc +%= 3;
                 self.r[a] = op2;
@@ -53,11 +52,10 @@ pub const Machine = struct {
                 self.pc +%= 3;
                 self.arithmetic(@truncate(opcode), a, op2);
             },
-            else => self.state = .faulted, // PC stays on the unknown opcode
+            else => self.state = .faulted,
         }
     }
 
-    /// ADD, ADC, SUB or SBC, from the low two bits of the opcode, into register `a`.
     fn arithmetic(self: *Machine, op: u2, a: u4, b: u8) void {
         const x = self.r[a];
         const result: u8, const carry: u1 = switch (op) {
@@ -68,7 +66,6 @@ pub const Machine = struct {
             },
             2 => @subWithOverflow(x, b),
             3 => sbc: {
-                // b + C can be 256, so it needs 9 bits.
                 const amount = @as(u9, b) + self.c;
                 break :sbc .{ @truncate(@as(u9, x) -% amount), @intFromBool(amount > x) };
             },
@@ -104,9 +101,6 @@ test "a u15 address covers memory exactly" {
     try std.testing.expectEqual(memory_size, std.math.maxInt(u15) + 1);
 }
 
-// Instruction tests. Each one loads a program at 0x0000 and checks registers, flags, PC and state.
-
-/// A reset machine with `program` at 0x0000.
 fn load(program: []const u8) Machine {
     var m: Machine = undefined;
     m.reset();
@@ -114,7 +108,6 @@ fn load(program: []const u8) Machine {
     return m;
 }
 
-/// Steps until the machine stops. A program that runs 1000 instructions fails the test.
 fn run(m: *Machine) !void {
     for (0..1000) |_| {
         if (m.state != .running) return;
@@ -138,8 +131,6 @@ test "the SPEC.md example adds 2 and 3" {
     try std.testing.expectEqual(8, m.pc);
 }
 
-// HLT and faults
-
 test "HLT halts with PC on the HLT" {
     var m = load(&.{0x00});
     m.step();
@@ -150,7 +141,7 @@ test "HLT halts with PC on the HLT" {
 test "HLT: a halted machine ignores step" {
     var m = load(&.{ 0x00, 0x10, 0x10, 0x07 });
     m.step();
-    m.pc = 1; // Even with PC moved to a valid LDI, nothing runs until reset.
+    m.pc = 1;
     m.step();
     try std.testing.expectEqual(0, m.r[1]);
     try std.testing.expectEqual(1, m.pc);
@@ -164,7 +155,6 @@ test "HLT: running off the end of a program halts in zeroed memory" {
 }
 
 test "fault: an unknown opcode faults with PC on the opcode and nothing changed" {
-    // 0x24 is CMP, which arrives in milestone 2, so for now it is unknown like 0xFF.
     for ([_]u8{ 0x01, 0x12, 0x24, 0x34, 0xFF }) |opcode| {
         var m = load(&.{ 0x10, 0x10, 0x07, opcode, 0x12, 0x00 });
         try run(&m);
@@ -182,8 +172,6 @@ test "fault: a faulted machine ignores step" {
     m.step();
     try std.testing.expectEqual(State.faulted, m.state);
 }
-
-// LDI and MOV
 
 test "LDI loads every register and ignores the low nibble" {
     for (0..16) |i| {
@@ -203,7 +191,7 @@ test "LDI and MOV leave the flags alone" {
     try expectFlags(m, 1, 1);
     m = load(&.{ 0x10, 0x10, 0x00, 0x11, 0x21, 0x00 });
     try run(&m);
-    try expectFlags(m, 0, 0); // Loading or moving 0 doesn't set Z either.
+    try expectFlags(m, 0, 0);
 }
 
 test "MOV copies the second register into the first" {
@@ -220,43 +208,33 @@ test "MOV with the same register twice changes nothing" {
     try std.testing.expectEqual(0x99, m.r[4]);
 }
 
-// ADD, ADC, SUB, SBC
-//
-// Each case runs twice: once as the register form (`2x ab`, with b in r2) and once as the
-// immediate form (`3x a0 n`). Both forms must give the same result and flags.
-
 const Case = struct { op: u8, a: u8, b: u8, c_in: u1 = 0, result: u8, z: u1, c: u1 };
 
 const cases = [_]Case{
-    // ADD
     .{ .op = 0, .a = 2, .b = 3, .result = 5, .z = 0, .c = 0 },
     .{ .op = 0, .a = 200, .b = 100, .result = 44, .z = 0, .c = 1 },
     .{ .op = 0, .a = 128, .b = 128, .result = 0, .z = 1, .c = 1 },
     .{ .op = 0, .a = 0, .b = 0, .result = 0, .z = 1, .c = 0 },
     .{ .op = 0, .a = 255, .b = 0, .result = 255, .z = 0, .c = 0 },
-    .{ .op = 0, .a = 1, .b = 1, .c_in = 1, .result = 2, .z = 0, .c = 0 }, // ADD ignores C
-    // ADC
+    .{ .op = 0, .a = 1, .b = 1, .c_in = 1, .result = 2, .z = 0, .c = 0 },
     .{ .op = 1, .a = 2, .b = 3, .c_in = 0, .result = 5, .z = 0, .c = 0 },
     .{ .op = 1, .a = 2, .b = 3, .c_in = 1, .result = 6, .z = 0, .c = 0 },
     .{ .op = 1, .a = 255, .b = 0, .c_in = 1, .result = 0, .z = 1, .c = 1 },
     .{ .op = 1, .a = 255, .b = 255, .c_in = 1, .result = 255, .z = 0, .c = 1 },
     .{ .op = 1, .a = 128, .b = 127, .c_in = 0, .result = 255, .z = 0, .c = 0 },
-    // SUB
     .{ .op = 2, .a = 5, .b = 3, .result = 2, .z = 0, .c = 0 },
     .{ .op = 2, .a = 3, .b = 5, .result = 254, .z = 0, .c = 1 },
     .{ .op = 2, .a = 5, .b = 5, .result = 0, .z = 1, .c = 0 },
     .{ .op = 2, .a = 0, .b = 255, .result = 1, .z = 0, .c = 1 },
-    .{ .op = 2, .a = 5, .b = 3, .c_in = 1, .result = 2, .z = 0, .c = 0 }, // SUB ignores C
-    // SBC
+    .{ .op = 2, .a = 5, .b = 3, .c_in = 1, .result = 2, .z = 0, .c = 0 },
     .{ .op = 3, .a = 5, .b = 3, .c_in = 0, .result = 2, .z = 0, .c = 0 },
     .{ .op = 3, .a = 5, .b = 3, .c_in = 1, .result = 1, .z = 0, .c = 0 },
     .{ .op = 3, .a = 5, .b = 5, .c_in = 1, .result = 255, .z = 0, .c = 1 },
     .{ .op = 3, .a = 6, .b = 5, .c_in = 1, .result = 0, .z = 1, .c = 0 },
-    .{ .op = 3, .a = 0, .b = 255, .c_in = 1, .result = 0, .z = 1, .c = 1 }, // b + C is 256
+    .{ .op = 3, .a = 0, .b = 255, .c_in = 1, .result = 0, .z = 1, .c = 1 },
     .{ .op = 3, .a = 255, .b = 255, .c_in = 1, .result = 255, .z = 0, .c = 1 },
 };
 
-/// Sets r1 to `a`, r2 to `b` and C to `c_in`, then runs `opcode` with r1 as the destination.
 fn runCase(case: Case, immediate: bool) !Machine {
     var m = load(&.{});
     m.r[1] = case.a;
@@ -282,7 +260,7 @@ test "ADD, ADC, SUB and SBC give the results and flags in SPEC.md, in both forms
             };
             errdefer std.debug.print("op {d}, a {d}, b {d}, C {d}, immediate {}\n", .{ case.op, case.a, case.b, case.c_in, immediate });
             try std.testing.expectEqual(case.result, m.r[1]);
-            try std.testing.expectEqual(case.b, m.r[2]); // the source is never written
+            try std.testing.expectEqual(case.b, m.r[2]);
             try expectFlags(m, case.z, case.c);
         }
     }
@@ -320,7 +298,6 @@ test "aliasing: SBC a, a with C set gives 255 and borrows" {
 }
 
 test "aliasing: r0 and rF work as destination and source like any other register" {
-    // rF is an ordinary register. Writing it doesn't touch the flags, and an add into it sets them.
     var m = load(&.{ 0x10, 0xF0, 0xFF, 0x10, 0x00, 0x01, 0x20, 0xF0, 0x00 });
     try run(&m);
     try std.testing.expectEqual(0, m.r[0xF]);
@@ -329,17 +306,16 @@ test "aliasing: r0 and rF work as destination and source like any other register
 }
 
 test "the SPEC.md 16-bit add carries from the low byte into the high byte" {
-    // r1:r2 = 0x01FF, r3:r4 = 0x0001. ADD r2, r4 then ADC r1, r3 gives 0x0200.
     var m = load(&.{ 0x10, 0x10, 0x01, 0x10, 0x20, 0xFF, 0x10, 0x30, 0x00, 0x10, 0x40, 0x01, 0x20, 0x24, 0x21, 0x13, 0x00 });
     try run(&m);
     try std.testing.expectEqual(0x02, m.r[1]);
     try std.testing.expectEqual(0x00, m.r[2]);
-    try expectFlags(m, 0, 0); // Z describes the high byte alone
+    try expectFlags(m, 0, 0);
 }
 
 test "operands wrap from 0x7FFF to 0x0000, and so does PC" {
     var m = load(&.{ 0x07, 0x00 });
-    m.memory[0x7FFE] = 0x10; // LDI r1, 7 split across the end of memory
+    m.memory[0x7FFE] = 0x10;
     m.memory[0x7FFF] = 0x10;
     m.pc = 0x7FFE;
     try run(&m);
@@ -349,7 +325,7 @@ test "operands wrap from 0x7FFF to 0x0000, and so does PC" {
 
 test "an instruction at the top of memory reads its operands from there" {
     var m = load(&.{});
-    @memcpy(m.memory[0x7FFC..][0..4], &[_]u8{ 0x00, 0x10, 0x10, 0x2A }); // LDI r1, 0x2A at 0x7FFD
+    @memcpy(m.memory[0x7FFC..][0..4], &[_]u8{ 0x00, 0x10, 0x10, 0x2A });
     m.pc = 0x7FFD;
     m.step();
     try std.testing.expectEqual(0x2A, m.r[1]);
