@@ -26,7 +26,56 @@ pub const Machine = struct {
 
     /// Executes one instruction. A halted or faulted machine does nothing.
     pub fn step(self: *Machine) void {
-        _ = self;
+        if (self.state != .running) return;
+
+        // Fetch every operand, then move PC past the instruction, then execute.
+        const opcode = self.memory[self.pc];
+        const op1 = self.memory[self.pc +% 1];
+        const op2 = self.memory[self.pc +% 2];
+        const a: u4 = @truncate(op1 >> 4);
+        const b: u4 = @truncate(op1);
+
+        switch (opcode) {
+            0x00 => self.state = .halted, // PC stays on the HLT
+            0x10 => {
+                self.pc +%= 3;
+                self.r[a] = op2;
+            },
+            0x11 => {
+                self.pc +%= 2;
+                self.r[a] = self.r[b];
+            },
+            0x20...0x23 => {
+                self.pc +%= 2;
+                self.arithmetic(@truncate(opcode), a, self.r[b]);
+            },
+            0x30...0x33 => {
+                self.pc +%= 3;
+                self.arithmetic(@truncate(opcode), a, op2);
+            },
+            else => self.state = .faulted, // PC stays on the unknown opcode
+        }
+    }
+
+    /// ADD, ADC, SUB or SBC, from the low two bits of the opcode, into register `a`.
+    fn arithmetic(self: *Machine, op: u2, a: u4, b: u8) void {
+        const x = self.r[a];
+        const result: u8, const carry: u1 = switch (op) {
+            0 => @addWithOverflow(x, b),
+            1 => adc: {
+                const sum = @as(u9, x) + b + self.c;
+                break :adc .{ @truncate(sum), @truncate(sum >> 8) };
+            },
+            2 => @subWithOverflow(x, b),
+            3 => sbc: {
+                // b + C can be 256, so it needs 9 bits.
+                const amount = @as(u9, b) + self.c;
+                break :sbc .{ @truncate(@as(u9, x) -% amount), @intFromBool(amount > x) };
+            },
+        };
+        self.r[a] = result;
+        self.z = @intFromBool(result == 0);
+        self.c = carry;
     }
 };
 
@@ -296,4 +345,13 @@ test "operands wrap from 0x7FFF to 0x0000, and so does PC" {
     try run(&m);
     try std.testing.expectEqual(7, m.r[1]);
     try std.testing.expectEqual(1, m.pc);
+}
+
+test "an instruction at the top of memory reads its operands from there" {
+    var m = load(&.{});
+    @memcpy(m.memory[0x7FFC..][0..4], &[_]u8{ 0x00, 0x10, 0x10, 0x2A }); // LDI r1, 0x2A at 0x7FFD
+    m.pc = 0x7FFD;
+    m.step();
+    try std.testing.expectEqual(0x2A, m.r[1]);
+    try std.testing.expectEqual(0, m.pc);
 }
