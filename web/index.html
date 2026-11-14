@@ -3,35 +3,144 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>figment</title>
+<title>Figment</title>
+<meta name="description" content="A made-up 8-bit console that runs in the browser. Play Rogue and the demo, or load your own program.">
+<!-- The 16 by 16 console icon, in palette colors: gray body, slate bezel, the self-test's pass green, a d-pad and two red buttons. -->
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' shape-rendering='crispEdges'%3E%3Crect x='1' y='1' width='14' height='14' fill='%23A7ADB8'/%3E%3Crect x='2' y='2' width='12' height='8' fill='%234A4F5C'/%3E%3Crect x='3' y='3' width='10' height='6' fill='%233CC45A'/%3E%3Crect x='3' y='11' width='1' height='3' fill='%234A4F5C'/%3E%3Crect x='2' y='12' width='3' height='1' fill='%234A4F5C'/%3E%3Crect x='11' y='12' width='1' height='1' fill='%23E8343F'/%3E%3Crect x='13' y='12' width='1' height='1' fill='%23E8343F'/%3E%3C/svg%3E">
 <style>
+  :root {
+    /* palette colors 1, 4, 5, 6, 7, 8, A and B */
+    --ink: #F4F1E8;
+    --dim: #A7ADB8;
+    --body: #A7ADB8;
+    --bezel: #4A4F5C;
+    --green: #3CC45A;
+    --red: #E8343F;
+    --yellow: #F6D23A;
+    --page: #101218;
+  }
   body {
     margin: 0;
     min-height: 100vh;
     display: grid;
     place-content: center;
-    gap: 12px;
-    padding: 16px;
+    justify-items: center;
+    gap: 20px;
+    padding: 32px 16px;
     box-sizing: border-box;
-    background: #111;
-    color: #ddd;
+    background: var(--page);
+    color: var(--ink);
     font: 14px ui-monospace, monospace;
   }
+  p { margin: 0; }
+  header { text-align: center; display: grid; gap: 6px; }
+  h1 {
+    margin: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    font-size: 26px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+  }
+  h1 img { width: 32px; height: 32px; image-rendering: pixelated; }
+  header p { color: var(--dim); max-width: 44ch; }
+
+  .console {
+    background: var(--body);
+    border-radius: 14px 14px 40px 40px;
+    padding: 18px 18px 22px;
+    display: grid;
+    gap: 14px;
+    box-shadow: 0 10px 0 #6E7480, 0 24px 40px #0008;
+  }
+  .bezel { background: var(--bezel); border-radius: 8px; padding: 16px 16px 10px; display: grid; gap: 8px; }
   canvas {
-    width: min(512px, calc(100vw - 32px));
+    display: block;
+    width: min(384px, calc(100vw - 100px));
     aspect-ratio: 1;
     image-rendering: pixelated;
   }
-  p { margin: 0; }
-  a { color: inherit; }
+  .status { display: flex; align-items: center; gap: 8px; color: var(--dim); font-size: 12px; }
+  .led { width: 8px; height: 8px; background: var(--green); box-shadow: 0 0 6px var(--green); }
+  .controls { display: flex; justify-content: space-between; align-items: center; padding: 0 8px; }
+  .dpad { width: 42px; height: 42px; position: relative; }
+  .dpad::before, .dpad::after { content: ""; position: absolute; background: var(--bezel); border-radius: 3px; }
+  .dpad::before { left: 14px; top: 0; width: 14px; height: 42px; }
+  .dpad::after { top: 14px; left: 0; width: 42px; height: 14px; }
+  .brand { font-size: 11px; font-weight: 700; letter-spacing: 0.3em; color: var(--bezel); }
+  .buttons { display: flex; gap: 12px; transform: rotate(-20deg); }
+  .buttons span {
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    display: grid;
+    place-content: center;
+    background: var(--red);
+    box-shadow: 0 3px 0 #9B1F28;
+    color: #9B1F28;
+    font-weight: 700;
+    transform: rotate(20deg);
+  }
+  .buttons span:first-child { margin-top: 14px; }
+
+  #error { color: var(--red); }
+  #error:empty { display: none; }
+  nav { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; }
+  nav a, nav label { padding: 8px 14px; border: 2px solid var(--bezel); color: var(--ink); text-decoration: none; cursor: pointer; }
+  nav a:hover, nav label:hover { border-color: var(--dim); }
+  nav a[aria-current] { background: var(--yellow); border-color: var(--yellow); color: var(--page); }
+  nav label { border-style: dashed; color: var(--dim); }
+  nav label:focus-within { outline: 2px solid var(--ink); }
+  nav input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+  .keys { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px 18px; color: var(--dim); font-size: 12px; }
+  kbd {
+    display: inline-block;
+    min-width: 1.6em;
+    margin-right: 4px;
+    padding: 2px 6px;
+    border: 1px solid var(--bezel);
+    border-bottom-width: 3px;
+    border-radius: 4px;
+    text-align: center;
+    color: var(--ink);
+    font: inherit;
+  }
+  footer a { color: var(--dim); font-size: 12px; }
 </style>
 </head>
 <body>
-<canvas width="128" height="128" aria-label="The figment screen"></canvas>
-<p id="state">loading</p>
+<header>
+  <h1><img alt="" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' shape-rendering='crispEdges'%3E%3Crect x='1' y='1' width='14' height='14' fill='%23A7ADB8'/%3E%3Crect x='2' y='2' width='12' height='8' fill='%234A4F5C'/%3E%3Crect x='3' y='3' width='10' height='6' fill='%233CC45A'/%3E%3Crect x='3' y='11' width='1' height='3' fill='%234A4F5C'/%3E%3Crect x='2' y='12' width='3' height='1' fill='%234A4F5C'/%3E%3Crect x='11' y='12' width='1' height='1' fill='%23E8343F'/%3E%3Crect x='13' y='12' width='1' height='1' fill='%23E8343F'/%3E%3C/svg%3E">Figment</h1>
+  <p>A made-up 8-bit console that runs in the browser. Play Rogue and the demo, or load your own program.</p>
+</header>
+<div class="console">
+  <div class="bezel">
+    <canvas width="128" height="128" aria-label="The Figment screen"></canvas>
+    <p class="status"><span class="led"></span><span id="state">loading</span></p>
+  </div>
+  <div class="controls" aria-hidden="true">
+    <div class="dpad"></div>
+    <span class="brand">FIGMENT</span>
+    <div class="buttons"><span>B</span><span>A</span></div>
+  </div>
+</div>
 <p id="error" role="alert"></p>
-<label>Program <input type="file" accept=".bin"></label>
-<p>Arrows, Z, X, Enter and Shift are the keys. <a href="?program=demo.bin">Demo</a> · <a href="?program=rogue.bin">Rogue</a> · <a href="?">Self-test</a></p>
+<nav>
+  <a href="?program=rogue.bin">Rogue</a>
+  <a href="?program=demo.bin">Demo</a>
+  <a href="?">Self-test</a>
+  <label>Load .bin<input type="file" accept=".bin"></label>
+</nav>
+<p class="keys">
+  <span><kbd>←</kbd><kbd>↑</kbd><kbd>↓</kbd><kbd>→</kbd>move</span>
+  <span><kbd>Z</kbd>A</span>
+  <span><kbd>X</kbd>B</span>
+  <span><kbd>Enter</kbd>Start</span>
+  <span><kbd>Shift</kbd>Select</span>
+</p>
+<footer><a href="https://github.com/stommeras/figment">Source on GitHub</a></footer>
 <script type="module">
 const memorySize = 0x8000;
 const screenStart = 0x4000;
@@ -59,13 +168,22 @@ let lastTime;
 let audio;
 let oscillator;
 let volume;
+let programName = "";
 
-function load(program) {
+function load(program, name) {
   if (program.length > memorySize) {
     errorText.textContent = "the program does not fit in memory";
     return;
   }
   errorText.textContent = "";
+  // "rogue.bin" is shown as "Rogue", in the tab title and the status line.
+  const base = name.replace(/\.bin$/, "");
+  programName = `${base.charAt(0).toUpperCase()}${base.slice(1)}`;
+  document.title = `${programName} · Figment`;
+  for (const link of document.querySelectorAll("nav a")) {
+    if ((new URL(link.href).searchParams.get("program") ?? "self-test.bin") === name) link.setAttribute("aria-current", "page");
+    else link.removeAttribute("aria-current");
+  }
   setBeep(0);
   wasm.reset(crypto.getRandomValues(new Uint32Array(1))[0]);
   new Uint8Array(wasm.memory.buffer, wasm.memory_ptr(), program.length).set(program);
@@ -114,13 +232,14 @@ function frame(now) {
   const screen = machine.subarray(screenStart);
   for (let i = 0; i < screen.length; i++) pixels[i] = palette[screen[i] & 15];
   context.putImageData(image, 0, 0);
-  if (stateText.textContent !== states[state]) stateText.textContent = states[state];
+  const status = `${programName} · ${states[state]}`;
+  if (stateText.textContent !== status) stateText.textContent = status;
   requestAnimationFrame(frame);
 }
 
 document.querySelector("input").addEventListener("change", async (event) => {
   const file = event.target.files[0];
-  if (file) load(new Uint8Array(await file.arrayBuffer()));
+  if (file) load(new Uint8Array(await file.arrayBuffer()), file.name);
   event.target.value = "";
 });
 
@@ -135,7 +254,7 @@ try {
   const paletteBytes = new Uint8Array(wasm.memory.buffer, wasm.palette_ptr(), 48);
   palette = Array.from({ length: 16 }, (_, i) => 0xff000000 | (paletteBytes[i * 3 + 2] << 16) | (paletteBytes[i * 3 + 1] << 8) | paletteBytes[i * 3]);
   const program = new URLSearchParams(location.search).get("program") ?? "self-test.bin";
-  load(new Uint8Array(await (await fetchBytes(program)).arrayBuffer()));
+  load(new Uint8Array(await (await fetchBytes(program)).arrayBuffer()), program);
   requestAnimationFrame(frame);
 } catch (error) {
   stateText.textContent = "";
