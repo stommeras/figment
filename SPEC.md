@@ -168,7 +168,7 @@ The page loads `self-test.bin`, or a `.bin` file the user picks. It refuses a fi
 
 ### The terminal renderer
 
-`zig build` also installs `zig-out/bin/figment-run`. `figment-run program.bin` resets the machine with seed 0, loads the program, and runs it until it halts or faults or has run 10,000,000 instructions. It then prints the screen to standard output, two pixel rows per line of text. Each character is `▀` with the upper pixel as the 24-bit foreground color and the lower pixel as the background color, It writes the color sequence `ESC[38;2;r;g;b;48;2;r;g;bm` only at the start of a line and where the pair of colors changes, and each line ends with `ESC[0m`.
+`zig build` also installs `zig-out/bin/figment-run`. `figment-run program.bin` resets the machine with seed 0, loads the program, and runs it until it halts or faults or has run 10,000,000 instructions. It then prints the screen to standard output, two pixel rows per line of text. Each character is `▀` with the upper pixel as the 24-bit foreground color and the lower pixel as the background color. It writes the color sequence `ESC[38;2;r;g;b;48;2;r;g;bm` only at the start of a line and where the pair of colors changes, and each line ends with `ESC[0m`.
 
 It exits with 0 when the machine halted or is still running. When the machine faulted it prints the screen, then `faulted at 0x` and `PC` in four hex digits to standard error, and exits with 1. Any other error, such as a program that cannot be read or is larger than 32,768 bytes, or standard output closing early, also exits with 1.
 
