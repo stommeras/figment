@@ -8,6 +8,11 @@ pub const screen_start = 0x4000;
 /// The numbers are the ones `state()` returns to the host.
 pub const State = enum(u32) { running = 0, halted = 1, faulted = 2 };
 
+/// Drops the top bit, as SPEC.md requires of a 16-bit value used as an address.
+fn address(hi: u8, lo: u8) u15 {
+    return @truncate(@as(u16, hi) << 8 | lo);
+}
+
 pub const Machine = struct {
     memory: [memory_size]u8 = @splat(0),
     r: [16]u8 = @splat(0),
@@ -31,8 +36,11 @@ pub const Machine = struct {
         const opcode = self.memory[self.pc];
         const op1 = self.memory[self.pc +% 1];
         const op2 = self.memory[self.pc +% 2];
+        const op3 = self.memory[self.pc +% 3];
         const a: u4 = @truncate(op1 >> 4);
         const b: u4 = @truncate(op1);
+        const h: u4 = @truncate(op2 >> 4);
+        const l: u4 = @truncate(op2);
 
         switch (opcode) {
             0x00 => self.state = .halted,
@@ -44,19 +52,72 @@ pub const Machine = struct {
                 self.pc +%= 2;
                 self.r[a] = self.r[b];
             },
-            0x20...0x23 => {
+            0x20...0x27 => {
                 self.pc +%= 2;
-                self.arithmetic(@truncate(opcode), a, self.r[b]);
+                self.alu(@truncate(opcode), a, self.r[b]);
             },
-            0x30...0x33 => {
+            0x30...0x37 => {
                 self.pc +%= 3;
-                self.arithmetic(@truncate(opcode), a, op2);
+                self.alu(@truncate(opcode), a, op2);
+            },
+            0x40 => {
+                self.pc +%= 2;
+                self.setResult(a, self.r[a] << 1, @truncate(self.r[a] >> 7));
+            },
+            0x41 => {
+                self.pc +%= 2;
+                self.setResult(a, self.r[a] >> 1, @truncate(self.r[a]));
+            },
+            0x50 => {
+                self.pc +%= 4;
+                self.r[a] = self.memory[address(op3, op2)];
+            },
+            0x51 => {
+                self.pc +%= 4;
+                self.memory[address(op3, op2)] = self.r[a];
+            },
+            0x52 => {
+                self.pc +%= 3;
+                self.r[a] = self.memory[address(self.r[h], self.r[l])];
+            },
+            0x53 => {
+                self.pc +%= 3;
+                self.memory[address(self.r[h], self.r[l])] = self.r[a];
+            },
+            0x60...0x64 => {
+                self.pc +%= 3;
+                const taken = switch (opcode) {
+                    0x60 => true,
+                    0x61 => self.z == 1,
+                    0x62 => self.z == 0,
+                    0x63 => self.c == 1,
+                    else => self.c == 0,
+                };
+                if (taken) self.pc = address(op2, op1);
+            },
+            0x70 => {
+                self.pc +%= 3;
+                self.push(@truncate(self.pc >> 8));
+                self.push(@truncate(self.pc));
+                self.pc = address(op2, op1);
+            },
+            0x71 => {
+                const lo = self.pop();
+                self.pc = address(self.pop(), lo);
+            },
+            0x72 => {
+                self.pc +%= 2;
+                self.push(self.r[a]);
+            },
+            0x73 => {
+                self.pc +%= 2;
+                self.r[a] = self.pop();
             },
             else => self.state = .faulted,
         }
     }
 
-    fn arithmetic(self: *Machine, op: u2, a: u4, b: u8) void {
+    fn alu(self: *Machine, op: u3, a: u4, b: u8) void {
         const x = self.r[a];
         const result: u8, const carry: u1 = switch (op) {
             0 => @addWithOverflow(x, b),
@@ -64,15 +125,36 @@ pub const Machine = struct {
                 const sum = @as(u9, x) +% b +% self.c;
                 break :adc .{ @truncate(sum), @truncate(sum >> 8) };
             },
-            2 => @subWithOverflow(x, b),
+            2, 4 => @subWithOverflow(x, b),
             3 => sbc: {
                 const amount = @as(u9, b) +% self.c;
                 break :sbc .{ @truncate(@as(u9, x) -% amount), @intFromBool(amount > x) };
             },
+            5 => .{ x & b, 0 },
+            6 => .{ x | b, 0 },
+            7 => .{ x ^ b, 0 },
         };
+        if (op == 4) {
+            self.z = @intFromBool(result == 0);
+            self.c = carry;
+        } else self.setResult(a, result, carry);
+    }
+
+    fn setResult(self: *Machine, a: u4, result: u8, carry: u1) void {
         self.r[a] = result;
         self.z = @intFromBool(result == 0);
         self.c = carry;
+    }
+
+    fn push(self: *Machine, value: u8) void {
+        self.sp -%= 1;
+        self.memory[self.sp] = value;
+    }
+
+    fn pop(self: *Machine) u8 {
+        const value = self.memory[self.sp];
+        self.sp +%= 1;
+        return value;
     }
 };
 
@@ -430,7 +512,7 @@ test "ST and LD with a register pair use h as the high byte and ignore the top b
     m.r[1] = 0xC4;
     m.r[2] = 0x92;
     m.r[3] = 0x34;
-    m.memory[0x3412] = 0x5B;
+    m.memory[0x3492] = 0x5B;
     m.z = 1;
     m.c = 1;
     m.step();
