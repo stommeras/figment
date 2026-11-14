@@ -39,7 +39,7 @@ STAIRS = 2
 PLAYER = 3                      ; the other glyphs
 DIGIT_0 = 4
 MONSTER = 14
-HEART = 15                      ; also a map tile
+HEART = 15
 
 UP = 0b0001
 DOWN = 0b0010
@@ -395,7 +395,8 @@ place_heart:
         LDI rE, 0
 .try:   SUB rE, 1
         JZ .end
-        CALL random_floor
+        CALL random_tile
+        CMP r0, FLOOR
         JNZ .try
         LD r0, [PLAYER_X]
         CMP r0, r7
@@ -407,21 +408,17 @@ place_heart:
         JMP set_tile
 .end:   RET
 
-; r7, r8 = a random map tile. Sets Z when it is floor. Uses r0, r5 and r6.
-random_floor:
+; r7, r8 = a random map tile and r0 = its tile. Uses r5 and r6.
+random_tile:
         LD r7, [RAND]
         AND r7, 15
         LD r8, [RAND]
         AND r8, 15
+        LDI r0, WALL
         CMP r8, 15
-        JZ .wall
-        CALL tile_at
-        CMP r0, FLOOR
-        RET
-.wall:  CMP r8, 0               ; r8 is 15, so this clears Z
+        JNZ tile_at
         RET
 
-; Monsters get 2 HP on depths 1 to 4, 3 on depths 5 to 9 and 4 deeper.
 ; Uses r0, r4 to r8 and rC to rF.
 place_monsters:
         LDI r5, hi(MONSTER_HP)
@@ -439,7 +436,7 @@ place_monsters:
         CMP rC, MONSTERS
         JC .count
 .all:   LDI rC, MONSTERS
-.count: LDI rF, 4               ; rF = the HP of each monster
+.count: LDI rF, 4
         LD r0, [DEPTH_TENS]
         CMP r0, 0
         JNZ .hp
@@ -451,7 +448,8 @@ place_monsters:
 .hp:    LDI rE, 0
 .try:   SUB rE, 1
         JZ .end
-        CALL random_floor
+        CALL random_tile
+        CMP r0, FLOOR
         JNZ .try
         CALL monster_at
         CMP r4, MONSTERS

@@ -848,7 +848,6 @@ test "rogue ends the run at 0 HP and starts over on the next arrow" {
     try testing.expectEqual(1, liveMonsters(&m));
 }
 
-/// Steps onto stairs put to the player's right, from the depth `tens`, `ones`.
 fn descendFrom(m: *figment.Machine, tens: u8, ones: u8) !void {
     m.memory[rogue.depth_tens] = tens;
     m.memory[rogue.depth_ones] = ones;
@@ -856,7 +855,6 @@ fn descendFrom(m: *figment.Machine, tens: u8, ones: u8) !void {
     try press(m, rogue.right);
 }
 
-/// The 64 pixels of status line tile `x`, row by row.
 fn statusTile(m: *const figment.Machine, x: usize) [64]u8 {
     var pixels: [64]u8 = undefined;
     for (0..8) |row| @memcpy(pixels[row * 8 ..][0..8], m.memory[figment.screen_start + row * 128 + x * 8 ..][0..8]);
@@ -944,14 +942,12 @@ test "rogue shows the HP a monster has left after a hit, 0 after a kill, and cle
     m.memory[rogue.player_hp] = 3;
     try press(&m, rogue.right);
     try testing.expectEqual(2, m.memory[rogue.monster_hp]);
-    // The monster hits back, so the player's HP digit on the right shows the same 2.
     try testing.expectEqual(2, m.memory[rogue.player_hp]);
     try testing.expectEqualSlices(u8, &statusTile(&m, 15), &statusTile(&m, 8));
     try testing.expect(!std.mem.eql(u8, &blank, &statusTile(&m, 7)));
     try press(&m, rogue.right);
     try press(&m, rogue.right);
     try testing.expectEqual(0, m.memory[rogue.monster_hp]);
-    // A kill shows 0, the same digit as the depth's tens on the left.
     try testing.expectEqualSlices(u8, &statusTile(&m, 1), &statusTile(&m, 8));
     removeMonsters(&m);
     try descendFrom(&m, 0, 1);
