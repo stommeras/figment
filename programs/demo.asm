@@ -1,6 +1,3 @@
-; Arrows move the dot, Z beeps a note that rises to the right,
-; X paints in random colors, and random pixels fade the trail to black.
-
         LDI r1, 64
         LDI r2, 64
 
@@ -8,21 +5,25 @@ frame:  LD r3, [0x3F00]
 
         MOV r4, r3
         AND r4, 0b0001
-        JZ down
+        JZ not_up
         SUB r2, 1
-down:   MOV r4, r3
+not_up:
+        MOV r4, r3
         AND r4, 0b0010
-        JZ left
+        JZ not_down
         ADD r2, 1
-left:   MOV r4, r3
+not_down:
+        MOV r4, r3
         AND r4, 0b0100
-        JZ right
+        JZ not_left
         SUB r1, 1
-right:  MOV r4, r3
+not_left:
+        MOV r4, r3
         AND r4, 0b1000
-        JZ moved
+        JZ not_right
         ADD r1, 1
-moved:  AND r1, 0x7F
+not_right:
+        AND r1, 0x7F
         AND r2, 0x7F
 
         LDI r0, 7
@@ -33,7 +34,7 @@ moved:  AND r1, 0x7F
         AND r0, 0x0F
 paint:  MOV r7, r1
         MOV r8, r2
-        CALL plot
+        CALL plot_r0_at_r7_r8
 
         LDI r9, 0
         MOV r4, r3
@@ -50,13 +51,13 @@ beep:   ST r9, [0x3F01]
         AND r7, 0x7F
         LD r8, [0x3F02]
         AND r8, 0x7F
-        CALL plot
+        CALL plot_r0_at_r7_r8
 
         ST r0, [0x3F03]
         JMP frame
 
-; Paints the pixel at column r7 and row r8 with color r0.
-plot:   MOV r5, r8
+plot_r0_at_r7_r8:
+        MOV r5, r8
         SHR r5
         ADD r5, 0x40
         MOV r6, r8
