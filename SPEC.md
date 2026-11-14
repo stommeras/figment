@@ -33,7 +33,7 @@ The machine doesn't protect any range. A program can execute, read and write eve
 
 ## Reset
 
-Reset zeroes memory, all registers, `PC` and both flags, sets `SP` to `0x3F00`, and sets the state to running.
+Reset zeroes memory, all registers, `PC` and both flags, sets `SP` to `0x3F00`, seeds the random generator, and sets the state to running.
 
 ## Instruction format
 

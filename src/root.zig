@@ -85,19 +85,19 @@ pub const Machine = struct {
             },
             0x50 => {
                 self.pc +%= 4;
-                self.r[a] = self.load(address(op3, op2));
+                self.r[a] = self.read(address(op3, op2));
             },
             0x51 => {
                 self.pc +%= 4;
-                self.store(address(op3, op2), self.r[a]);
+                self.write(address(op3, op2), self.r[a]);
             },
             0x52 => {
                 self.pc +%= 3;
-                self.r[a] = self.load(address(self.r[h], self.r[l]));
+                self.r[a] = self.read(address(self.r[h], self.r[l]));
             },
             0x53 => {
                 self.pc +%= 3;
-                self.store(address(self.r[h], self.r[l]), self.r[a]);
+                self.write(address(self.r[h], self.r[l]), self.r[a]);
             },
             0x60...0x64 => {
                 self.pc +%= 3;
@@ -162,12 +162,12 @@ pub const Machine = struct {
         self.c = carry;
     }
 
-    fn load(self: *Machine, addr: u15) u8 {
+    fn read(self: *Machine, addr: u15) u8 {
         if (addr == rand) return @truncate(self.rng.next() >> 56);
         return self.memory[addr];
     }
 
-    fn store(self: *Machine, addr: u15, value: u8) void {
+    fn write(self: *Machine, addr: u15, value: u8) void {
         self.memory[addr] = value;
         if (addr == frame) self.frame_ended = true;
     }
@@ -705,13 +705,11 @@ test "LD with an address at the top of memory reads its high byte from 0x0000" {
 }
 
 test "LD from RAND gives the xoshiro256++ bytes SPEC.md lists for seed 0" {
-    var m = load(&.{ 0x50, 0x10, 0x02, 0x3F, 0x52, 0x20, 0x34, 0x50, 0x30, 0x02, 0xBF, 0x00 });
+    var m = load(&.{ 0x50, 0x10, 0x02, 0x3F, 0x52, 0x20, 0x34, 0x50, 0x30, 0x02, 0xBF, 0x50, 0x40, 0x02, 0x3F, 0x50, 0x50, 0x02, 0x3F, 0x50, 0x60, 0x02, 0x3F, 0x50, 0x70, 0x02, 0x3F, 0x50, 0x80, 0x02, 0x3F, 0x00 });
     m.r[3] = 0x3F;
     m.r[4] = 0x02;
     try run(&m);
-    try std.testing.expectEqual(0x53, m.r[1]);
-    try std.testing.expectEqual(0x61, m.r[2]);
-    try std.testing.expectEqual(0x5C, m.r[3]);
+    try std.testing.expectEqualSlices(u8, &.{ 0x53, 0x61, 0x5C, 0x02, 0x7E, 0x05, 0xDB, 0xD8 }, m.r[1..9]);
 }
 
 test "the seed picks the random sequence" {
@@ -747,11 +745,12 @@ test "ST to FRAME ends the frame with either address form, and stores the byte" 
     try std.testing.expectEqual(0x07, m.memory[0x3F03]);
     try std.testing.expectEqual(7, m.pc);
 
-    m = load(&.{ 0x53, 0x12, 0x34, 0x00 });
+    m = load(&.{ 0x53, 0x30, 0x34, 0x00 });
     m.r[3] = 0xBF;
     m.r[4] = 0x03;
     m.step();
     try std.testing.expect(m.frame_ended);
+    try std.testing.expectEqual(0xBF, m.memory[0x3F03]);
 }
 
 test "PUSH and CALL into FRAME do not end the frame" {

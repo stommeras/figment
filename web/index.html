@@ -66,6 +66,7 @@ function load(program) {
     return;
   }
   errorText.textContent = "";
+  setBeep(0);
   wasm.reset(crypto.getRandomValues(new Uint32Array(1))[0]);
   new Uint8Array(wasm.memory.buffer, wasm.memory_ptr(), program.length).set(program);
 }
@@ -93,8 +94,7 @@ function keyBit(event) {
 addEventListener("keydown", (event) => {
   startAudio();
   const bit = keyBit(event);
-  if (!bit) return;
-  event.preventDefault();
+  if (event.key.startsWith("Arrow")) event.preventDefault();
   keys |= bit;
 });
 addEventListener("keyup", (event) => { keys &= ~keyBit(event); });
