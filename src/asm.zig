@@ -1009,7 +1009,11 @@ const tangle = struct {
     const playing = constant(tangle_source, "PLAYING");
     const over = constant(tangle_source, "OVER");
     const ready = constant(tangle_source, "READY");
+    const match_over = constant(tangle_source, "MATCH_OVER");
     const pause_frames = constant(tangle_source, "PAUSE_FRAMES");
+    const win_score = constant(tangle_source, "WIN_SCORE");
+    const gap_odds = constant(tangle_source, "GAP_ODDS");
+    const gap_moves = constant(tangle_source, "GAP_MOVES");
     const steps = constant(tangle_source, "STEPS");
     const turn_steps = constant(tangle_source, "TURN_STEPS");
     const navy = constant(tangle_source, "NAVY");
@@ -1056,6 +1060,7 @@ fn putHead(m: *figment.Machine, p: usize, x: u8, y: u8, dir: u8) void {
     tangleField(m, p, "CUR_TURN_WAIT").* = 0;
     tangleField(m, p, "CUR_ALIVE").* = 1;
     tangleField(m, p, "CUR_MOVED").* = 0;
+    tangleField(m, p, "CUR_GAP").* = 0;
     inline for (.{ "OLD", "CORNER" }) |name| {
         tangleField(m, p, "CUR_" ++ name ++ "_X").* = x;
         tangleField(m, p, "CUR_" ++ name ++ "_Y").* = y;
@@ -1063,10 +1068,11 @@ fn putHead(m: *figment.Machine, p: usize, x: u8, y: u8, dir: u8) void {
     screenPixel(m, x, y).* = tangleField(m, p, "CUR_COLOR").*;
 }
 
-/// An empty field with player 1 at x, y facing `dir`, and player 2 out of the way
-/// near the bottom left, heading right.
+/// An empty field with player 1 at x, y facing `dir`, player 2 out of the way
+/// near the bottom left heading right, and no gaps.
 fn tangleRound(m: *figment.Machine, x: u8, y: u8, dir: u8) !void {
     try startTangle(m, 0);
+    m.memory[tangle.gap_odds] = 0;
     emptyField(m);
     putHead(m, 0, x, y, dir);
     putHead(m, 1, 10, 120, 0);
@@ -1201,14 +1207,21 @@ test "tangle keeps heads in the field and lines 4-connected through many rounds"
     var r: std.Random.DefaultPrng = .init(3);
     var rounds: usize = 0;
     var before: [2][2]u8 = undefined;
+    var gap_before: [2]u8 = undefined;
+    var matches: usize = 0;
     for (0..20_000) |i| {
         // Change the held keys every 8 frames, so turns are held for a while.
         if (i % 8 == 0) m.memory[figment.keys] = r.random().int(u8);
         const state_before = m.memory[tangle.state];
-        for (0..2) |p| before[p] = .{ tangleField(&m, p, "CUR_X_HI").*, tangleField(&m, p, "CUR_Y_HI").* };
+        for (0..2) |p| {
+            before[p] = .{ tangleField(&m, p, "CUR_X_HI").*, tangleField(&m, p, "CUR_Y_HI").* };
+            gap_before[p] = tangleField(&m, p, "CUR_GAP").*;
+        }
         _ = try runFrame(&m);
         const state = m.memory[tangle.state];
-        rounds += @intFromBool(state_before == tangle.playing and state == tangle.over);
+        rounds += @intFromBool(state_before == tangle.playing and state != tangle.playing);
+        matches += @intFromBool(state_before == tangle.playing and state == tangle.match_over);
+        for (0..2) |p| try testing.expect(tangleField(&m, p, "CUR_SCORE").* <= tangle.win_score);
         if (state_before != tangle.playing) continue;
         for (0..2) |p| {
             const x = tangleField(&m, p, "CUR_X_HI").*;
@@ -1226,8 +1239,81 @@ test "tangle keeps heads in the field and lines 4-connected through many rounds"
             // The corner touches both the old head and the new one along an edge, or is the new one.
             try testing.expect(corner_x == x and (corner_y == old_y or corner_y == y));
             try testing.expect(old_x == x or old_y == y or corner_y == old_y);
+            if (gap_before[p] > 0) continue;
             try testing.expectEqual(tangleField(&m, p, "CUR_COLOR").*, screenPixel(&m, corner_x, corner_y).*);
         }
     }
     try testing.expect(rounds >= 10);
+    try testing.expect(matches >= 2);
+}
+
+test "tangle leaves a gap of GAP_MOVES pixels, then goes on drawing" {
+    var m: figment.Machine = undefined;
+    try tangleRound(&m, 40, 60, 0);
+    tangleField(&m, 0, "CUR_GAP").* = tangle.gap_moves;
+    try runFrames(&m, 0, 40);
+    const x = tangleField(&m, 0, "CUR_X_HI").*;
+    try testing.expect(x > 40 + tangle.gap_moves + 4);
+    for (40..x + 1) |column| {
+        const color = if (column < 40 + tangle.gap_moves) tangle.navy else tangle.yellow;
+        try testing.expectEqual(color, screenPixel(&m, column, 60).*);
+    }
+    // Player 2 drives through the gap.
+    try tangleRound(&m, 40, 60, 0);
+    tangleField(&m, 0, "CUR_GAP").* = tangle.gap_moves;
+    putHead(&m, 1, 41, 50, 8);
+    try runFrames(&m, 0, 40);
+    try testing.expectEqual(1, tangleField(&m, 1, "CUR_ALIVE").*);
+    try testing.expect(tangleField(&m, 1, "CUR_Y_HI").* > 62);
+}
+
+/// Runs frames until the round ends.
+fn runRound(m: *figment.Machine) !void {
+    for (0..1000) |_| {
+        _ = try runFrame(m);
+        if (m.memory[tangle.state] != tangle.playing) return;
+    }
+    return error.RoundNeverEnded;
+}
+
+/// Whether status tile `t` has a pixel in `color`.
+fn statusTileHas(m: *figment.Machine, t: usize, color: usize) bool {
+    for (0..8) |y| for (0..8) |x| {
+        if (screenPixel(m, t * 8 + x, y).* == color) return true;
+    };
+    return false;
+}
+
+test "tangle gives the other player a point when a head stops, and none when both do" {
+    var m: figment.Machine = undefined;
+    try tangleRound(&m, 124, 60, 0);
+    try runRound(&m);
+    try testing.expectEqual(0, tangleField(&m, 0, "CUR_SCORE").*);
+    try testing.expectEqual(1, tangleField(&m, 1, "CUR_SCORE").*);
+    try testing.expect(m.memory[figment.beep] != 0);
+    try testing.expect(statusTileHas(&m, 0, tangle.yellow));
+    try testing.expect(statusTileHas(&m, 15, tangle.blue));
+
+    try tangleRound(&m, 40, 60, 0);
+    putHead(&m, 1, 80, 60, 16);
+    try runRound(&m);
+    for (0..2) |p| try testing.expectEqual(0, tangleField(&m, p, "CUR_SCORE").*);
+    try testing.expect(m.memory[figment.beep] != 0);
+}
+
+test "tangle ends the match at WIN_SCORE with a bar in the winner's color, and Start begins a new one" {
+    var m: figment.Machine = undefined;
+    try tangleRound(&m, 124, 60, 0);
+    tangleField(&m, 1, "CUR_SCORE").* = tangle.win_score - 1;
+    try runFrames(&m, 0, 20);
+    try testing.expectEqual(tangle.win_score, tangleField(&m, 1, "CUR_SCORE").*);
+    try testing.expectEqual(tangle.match_over, m.memory[tangle.state]);
+    for (2..14) |t| try testing.expect(statusTileHas(&m, t, tangle.blue));
+    // No new round comes by itself.
+    try runFrames(&m, 0, tangle.pause_frames * 2);
+    try testing.expectEqual(tangle.match_over, m.memory[tangle.state]);
+    try runFrames(&m, tangle.start, 1);
+    try testing.expectEqual(tangle.ready, m.memory[tangle.state]);
+    for (0..2) |p| try testing.expectEqual(0, tangleField(&m, p, "CUR_SCORE").*);
+    for (2..14) |t| try testing.expect(!statusTileHas(&m, t, tangle.blue));
 }

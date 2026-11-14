@@ -1,6 +1,7 @@
 ; Two players steer curving lines around a walled field, and a line that runs into
 ; anything stops. Player 1 turns with Left and Right, player 2 with A and B.
-; Start begins a round.
+; Start begins a round. The one still moving when the other stops gets a point,
+; and the first to 5 wins the match. Now and then a line leaves a short gap to slip through.
 ;
 ; Each head keeps its position as 8.8 fixed point, a whole pixel and a fraction,
 ; and turns through 32 directions. A head only acts on a step that takes it to a new pixel.
@@ -33,22 +34,33 @@ CUR_OLD_X = 0x300B              ; the pixel the head left on its last move
 CUR_OLD_Y = 0x300C
 CUR_CORNER_X = 0x300D           ; the corner pixel of that move, or the new head after a straight one
 CUR_CORNER_Y = 0x300E
-PLAYER_BYTES = 15
+CUR_GAP = 0x300F                ; the moves left in the current gap
+CUR_SCORE = 0x3010
+PLAYER_BYTES = 17
 P1 = 0x3020                     ; P1 and P2 share the page of CUR, so copies change only low bytes
 P2 = 0x3040
 
 STATE = 0x3060
 KEYS_BEFORE = 0x3061            ; the keys held last frame
 PAUSE = 0x3062                  ; the frames left before the next round
+GAP_ODDS = 0x3063               ; a gap starts on a move when a random byte is below this
+BEEP_FRAMES = 0x3064            ; the frames left on the current beep
 
 READY = 0                       ; the states
 PLAYING = 1
 OVER = 2
+MATCH_OVER = 3
 
 STEPS = 1                       ; the moves each frame. Each moves under half a pixel
 TURN_STEPS = 2                  ; the steps between turns while a key is held. At 1, a head
                                 ; could wobble back onto the pixel it just left and stop
 PAUSE_FRAMES = 60
+WIN_SCORE = 5
+GAP_CHANCE = 4                  ; out of 256 moves
+GAP_MOVES = 4
+
+BLANK = 10                      ; the glyphs after the digits
+BAR = 11
 
 LEFT = 0b0000_0100
 RIGHT = 0b0000_1000
@@ -56,24 +68,22 @@ KEY_A = 0b0001_0000
 KEY_B = 0b0010_0000
 START = 0b0100_0000
 
+BLACK = 0x0
 NAVY = 0x1
 GRAY = 0x6
 YELLOW = 0xA
 BLUE = 0xC
 
-main:   LDI rB, lo(P1)
-        LDI r1, YELLOW
-        LDI r2, LEFT
-        LDI r3, RIGHT
-        CALL setup
-        LDI rB, lo(P2)
-        LDI r1, BLUE
-        LDI r2, KEY_A
-        LDI r3, KEY_B
-        CALL setup
-        CALL new_round
+NOTE_CRASH = 30
+NOTE_POINT = 76
+NOTE_WIN = 84
 
-frame:  LD rC, [KEYS]           ; rC = the keys held
+main:   LDI r0, GAP_CHANCE
+        ST r0, [GAP_ODDS]
+        CALL new_match
+
+frame:  CALL tick_beep
+        LD rC, [KEYS]           ; rC = the keys held
         LD r0, [KEYS_BEFORE]
         ST rC, [KEYS_BEFORE]
         XOR r0, 0xFF
@@ -86,7 +96,11 @@ frame:  LD rC, [KEYS]           ; rC = the keys held
         JZ .over
         AND rD, START
         JZ .done
-        LDI r0, PLAYING
+        CMP r0, MATCH_OVER
+        JNZ .go
+        CALL new_match
+        JMP .done
+.go:    LDI r0, PLAYING
         ST r0, [STATE]
         JMP .done
 .over:  LD r0, [PAUSE]
@@ -107,11 +121,26 @@ frame:  LD rC, [KEYS]           ; rC = the keys held
 .done:  ST r0, [FRAME]
         JMP frame
 
-; Gives player rB color r1, left key r2 and right key r3.
+new_match:
+        LDI rB, lo(P1)
+        LDI r1, YELLOW
+        LDI r2, LEFT
+        LDI r3, RIGHT
+        CALL setup
+        LDI rB, lo(P2)
+        LDI r1, BLUE
+        LDI r2, KEY_A
+        LDI r3, KEY_B
+        CALL setup
+        JMP new_round
+
+; Gives player rB color r1, left key r2, right key r3 and no points.
 setup:  CALL load_player
         ST r1, [CUR_COLOR]
         ST r2, [CUR_LEFT]
         ST r3, [CUR_RIGHT]
+        LDI r0, 0
+        ST r0, [CUR_SCORE]
         JMP store_player
 
 ; Clears the field and puts both heads on it, at least 16 pixels from the border
@@ -138,7 +167,7 @@ new_round:
         CALL place
         LDI r0, READY
         ST r0, [STATE]
-        RET
+        JMP draw_status
 
 ; r1 = a random column from 32 to 95 and r2 = a random row from 36 to 99.
 random_spot:
@@ -167,6 +196,7 @@ place:  CALL load_player
         LDI r0, 0
         ST r0, [CUR_TURN_WAIT]
         ST r0, [CUR_MOVED]
+        ST r0, [CUR_GAP]
         LDI r0, 1
         ST r0, [CUR_ALIVE]
         LD r0, [CUR_COLOR]
@@ -185,19 +215,44 @@ step:   LDI rB, lo(P1)
         LDI rB, lo(P2)
         CALL draw_head
 
-; Ends the round if a head stopped.
+; Ends the round if a head stopped, and gives the other a point if it didn't.
         LDI rB, lo(P1)
         CALL load_player
         LD r1, [CUR_ALIVE]
         LDI rB, lo(P2)
         CALL load_player
         LD r2, [CUR_ALIVE]
-        AND r1, r2
+        MOV r0, r1
+        AND r0, r2
         JNZ .end
         LDI r0, OVER
         ST r0, [STATE]
         LDI r0, PAUSE_FRAMES
         ST r0, [PAUSE]
+        LDI rB, lo(P1)
+        CMP r1, 0
+        JNZ .point
+        LDI rB, lo(P2)
+        CMP r2, 0
+        JNZ .point
+        LDI r0, NOTE_CRASH
+        LDI r1, 20
+        JMP beep
+.point: CALL load_player
+        LD r1, [CUR_SCORE]
+        ADD r1, 1
+        ST r1, [CUR_SCORE]
+        CALL store_player
+        LDI r0, NOTE_POINT
+        CMP r1, WIN_SCORE
+        LDI r1, 10
+        JNZ .beep
+        LDI r0, MATCH_OVER
+        ST r0, [STATE]
+        LDI r0, NOTE_WIN
+        LDI r1, 40
+.beep:  CALL beep
+        JMP draw_status
 .end:   RET
 
 ; Turns player rB with the keys in rC, moves it, and stops it if its new pixels are taken.
@@ -366,23 +421,184 @@ blocked:
         CMP r0, NAVY
         RET
 
-; Draws the new pixels of player rB if it moved this step. Keeps rB to rD.
+; Draws the new pixels of player rB if it moved this step. In a gap it draws only the head
+; and erases the pixel behind, which no other head can be on. Keeps rB to rD.
 draw_head:
         CALL load_player
         LD r0, [CUR_ALIVE]
         LD r1, [CUR_MOVED]
         AND r0, r1
         JZ store_player
+        LD r0, [CUR_GAP]
+        CMP r0, 0
+        JZ .line
+        SUB r0, 1
+        ST r0, [CUR_GAP]
+        LDI r0, NAVY
+        LD r1, [CUR_OLD_X]
+        LD r2, [CUR_OLD_Y]
+        CALL pixel_address
+        ST r0, [r5:r6]
+        JMP .head
+.line:  LD r0, [RAND]
+        LD r1, [GAP_ODDS]
+        CMP r0, r1
+        JNC .corner
+        LDI r0, GAP_MOVES
+        ST r0, [CUR_GAP]
+.corner:
         LD r0, [CUR_COLOR]
         LD r1, [CUR_CORNER_X]
         LD r2, [CUR_CORNER_Y]
         CALL pixel_address
         ST r0, [r5:r6]
+.head:  LD r0, [CUR_COLOR]
         LD r1, [CUR_X_HI]
         LD r2, [CUR_Y_HI]
         CALL pixel_address
         ST r0, [r5:r6]
         JMP store_player
+
+; Plays note r0 for r1 frames.
+beep:   ST r0, [BEEP]
+        ST r1, [BEEP_FRAMES]
+        RET
+
+tick_beep:
+        LD r0, [BEEP_FRAMES]
+        CMP r0, 0
+        JZ .end
+        SUB r0, 1
+        ST r0, [BEEP_FRAMES]
+        JNZ .end
+        ST r0, [BEEP]
+.end:   RET
+
+; Draws each player's score in its color at either end of the status line,
+; and between them a bar in the winner's color once the match is over.
+draw_status:
+        LDI rB, lo(P1)
+        LDI r7, 0
+        CALL draw_score
+        LDI rB, lo(P2)
+        LDI r7, 15
+        CALL draw_score
+        LD r0, [STATE]
+        CMP r0, MATCH_OVER
+        JNZ .blank
+        LD r0, [CUR_SCORE]      ; CUR holds player 2
+        CMP r0, WIN_SCORE
+        JZ .won
+        LDI rB, lo(P1)
+        CALL load_player
+.won:   LD r1, [CUR_COLOR]
+        LDI r0, BAR
+        JMP .bar
+.blank: LDI r0, BLANK
+.bar:   LDI r7, 2
+.tile:  CALL draw_tile
+        ADD r7, 1
+        CMP r7, 14
+        JNZ .tile
+        RET
+
+; Draws player rB's score at status tile r7.
+draw_score:
+        CALL load_player
+        LD r0, [CUR_SCORE]
+        LD r1, [CUR_COLOR]
+        LDI r8, 0
+        JMP draw_tile
+
+; Draws glyph r0 in color r1 on black at screen tile r7, r8.
+; Keeps r0, r1, r4, r7, r8, rC and rD. Uses r2, r3, r5, r6 and r9 to rB.
+; This is the drawing loop from rogue.asm, kept unrolled.
+draw_tile:
+        LDI r2, BLACK
+        MOV rA, r0              ; r9:rA = glyphs + r0 * 8
+        SHL rA
+        SHL rA
+        SHL rA
+        LDI r9, hi(glyphs)
+        ADD rA, lo(glyphs)
+        ADC r9, 0
+        MOV r5, r8              ; r5:r6 = SCREEN + r8 * 1024 + r7 * 8
+        SHL r5
+        SHL r5
+        ADD r5, hi(SCREEN)
+        MOV r6, r7
+        SHL r6
+        SHL r6
+        SHL r6
+        LDI rB, 8
+.row:   LD r3, [r9:rA]
+        CMP r3, 0
+        JZ .blank
+        ST r2, [r5:r6]
+        SHL r3
+        JNC .px0
+        ST r1, [r5:r6]
+.px0:   ADD r6, 1
+        ST r2, [r5:r6]
+        SHL r3
+        JNC .px1
+        ST r1, [r5:r6]
+.px1:   ADD r6, 1
+        ST r2, [r5:r6]
+        SHL r3
+        JNC .px2
+        ST r1, [r5:r6]
+.px2:   ADD r6, 1
+        ST r2, [r5:r6]
+        SHL r3
+        JNC .px3
+        ST r1, [r5:r6]
+.px3:   ADD r6, 1
+        ST r2, [r5:r6]
+        SHL r3
+        JNC .px4
+        ST r1, [r5:r6]
+.px4:   ADD r6, 1
+        ST r2, [r5:r6]
+        SHL r3
+        JNC .px5
+        ST r1, [r5:r6]
+.px5:   ADD r6, 1
+        ST r2, [r5:r6]
+        SHL r3
+        JNC .px6
+        ST r1, [r5:r6]
+.px6:   ADD r6, 1
+        ST r2, [r5:r6]
+        SHL r3
+        JNC .px7
+        ST r1, [r5:r6]
+.px7:   ADD r6, 1
+        JMP .next
+.blank: ST r2, [r5:r6]
+        ADD r6, 1
+        ST r2, [r5:r6]
+        ADD r6, 1
+        ST r2, [r5:r6]
+        ADD r6, 1
+        ST r2, [r5:r6]
+        ADD r6, 1
+        ST r2, [r5:r6]
+        ADD r6, 1
+        ST r2, [r5:r6]
+        ADD r6, 1
+        ST r2, [r5:r6]
+        ADD r6, 1
+        ST r2, [r5:r6]
+        ADD r6, 1
+.next:  SUB r6, 8               ; back to the row start, then down a row
+        ADD r6, 128
+        ADC r5, 0
+        ADD rA, 1
+        ADC r9, 0
+        SUB rB, 1
+        JNZ .row
+        RET
 
 ; Copies player rB to CUR. Uses r0, r5, r6, rE and rF.
 load_player:
@@ -460,3 +676,17 @@ sine:   .byte 0x00, 0x19, 0x31, 0x47, 0x5A, 0x6A, 0x75, 0x7D
         .byte 0x00, 0xE7, 0xCF, 0xB9, 0xA6, 0x96, 0x8B, 0x83
         .byte 0x81, 0x83, 0x8B, 0x96, 0xA6, 0xB9, 0xCF, 0xE7
         .byte 0x00, 0x19, 0x31, 0x47, 0x5A, 0x6A, 0x75, 0x7D
+
+; 8 bytes a glyph, one bit per pixel, top row first: the digits 0 to 9, BLANK and BAR.
+glyphs: .byte 0x3C, 0x66, 0x6E, 0x76, 0x66, 0x66, 0x3C, 0x00
+        .byte 0x18, 0x38, 0x18, 0x18, 0x18, 0x18, 0x7E, 0x00
+        .byte 0x3C, 0x66, 0x06, 0x0C, 0x30, 0x60, 0x7E, 0x00
+        .byte 0x3C, 0x66, 0x06, 0x1C, 0x06, 0x66, 0x3C, 0x00
+        .byte 0x0C, 0x1C, 0x3C, 0x6C, 0x7E, 0x0C, 0x0C, 0x00
+        .byte 0x7E, 0x60, 0x7C, 0x06, 0x06, 0x66, 0x3C, 0x00
+        .byte 0x3C, 0x66, 0x60, 0x7C, 0x66, 0x66, 0x3C, 0x00
+        .byte 0x7E, 0x06, 0x0C, 0x18, 0x30, 0x30, 0x30, 0x00
+        .byte 0x3C, 0x66, 0x66, 0x3C, 0x66, 0x66, 0x3C, 0x00
+        .byte 0x3C, 0x66, 0x66, 0x3E, 0x06, 0x66, 0x3C, 0x00
+        .byte 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+        .byte 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0x00
