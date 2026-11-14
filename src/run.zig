@@ -5,12 +5,53 @@ const figment = @import("figment");
 pub const max_steps = 10_000_000;
 
 pub fn render(w: *std.Io.Writer, screen: *const [figment.screen_size * figment.screen_size]u8) std.Io.Writer.Error!void {
-    _ = w;
-    _ = screen;
+    for (0..figment.screen_size / 2) |row| {
+        var last: ?[2]u4 = null;
+        for (0..figment.screen_size) |x| {
+            const top = screen[row * 2 * figment.screen_size + x];
+            const bottom = screen[(row * 2 + 1) * figment.screen_size + x];
+            const pair: [2]u4 = .{ @truncate(top), @truncate(bottom) };
+            if (last == null or !std.meta.eql(last.?, pair)) {
+                const fg = figment.palette[pair[0]];
+                const bg = figment.palette[pair[1]];
+                try w.print("\x1b[38;2;{d};{d};{d};48;2;{d};{d};{d}m", .{ fg[0], fg[1], fg[2], bg[0], bg[1], bg[2] });
+                last = pair;
+            }
+            try w.writeAll("▀");
+        }
+        try w.writeAll("\x1b[0m\n");
+    }
 }
 
 pub fn main(init: std.process.Init) !void {
-    _ = init;
+    const arena = init.arena.allocator();
+    const args = try init.minimal.args.toSlice(arena);
+    if (args.len != 2) {
+        std.debug.print("usage: figment-run <program.bin>\n", .{});
+        std.process.exit(1);
+    }
+    const program = std.Io.Dir.cwd().readFileAlloc(init.io, args[1], arena, .limited(figment.memory_size + 1)) catch |err| {
+        switch (err) {
+            error.StreamTooLong => std.debug.print("{s}: the program does not fit in memory\n", .{args[1]}),
+            else => std.debug.print("{s}: cannot read: {t}\n", .{ args[1], err }),
+        }
+        std.process.exit(1);
+    };
+    const m = try arena.create(figment.Machine);
+    m.reset();
+    @memcpy(m.memory[0..program.len], program);
+    for (0..max_steps) |_| {
+        if (m.state != .running) break;
+        m.step();
+    }
+    var buffer: [4096]u8 = undefined;
+    var stdout = std.Io.File.stdout().writer(init.io, &buffer);
+    render(&stdout.interface, m.memory[figment.screen_start..]) catch std.process.exit(1);
+    stdout.interface.flush() catch std.process.exit(1);
+    if (m.state == .faulted) {
+        std.debug.print("faulted at 0x{X:0>4}\n", .{m.pc});
+        std.process.exit(1);
+    }
 }
 
 const testing = std.testing;

@@ -28,7 +28,7 @@ export fn state() u32 {
 }
 
 export fn palette_ptr() u32 {
-    return 0;
+    return @intCast(@intFromPtr(&figment.palette));
 }
 
 test "reset returns the machine to running" {

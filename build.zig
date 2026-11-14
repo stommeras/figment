@@ -100,4 +100,16 @@ pub fn build(b: *std.Build) void {
     run_fault.expectStdErrMatch("faulted at 0x0003\n");
     run_fault.expectExitCode(1);
     test_step.dependOn(&run_fault.step);
+
+    const full = b.allocator.alloc(u8, 0x8000 + 1) catch @panic("OOM");
+    @memset(full, 0);
+    const fits = b.addRunArtifact(run_exe);
+    fits.addFileArg(b.addWriteFiles().add("full.bin", full[0..0x8000]));
+    fits.expectExitCode(0);
+    test_step.dependOn(&fits.step);
+    const too_big = b.addRunArtifact(run_exe);
+    too_big.addFileArg(b.addWriteFiles().add("big.bin", full));
+    too_big.expectStdErrMatch("big.bin: the program does not fit in memory\n");
+    too_big.expectExitCode(1);
+    test_step.dependOn(&too_big.step);
 }
