@@ -91,6 +91,13 @@ pub fn build(b: *std.Build) void {
 
     const run_self_test = b.addRunArtifact(run_exe);
     run_self_test.addFileArg(self_test_bin);
+    var green: std.ArrayList(u8) = .empty;
+    for (0..64) |_| {
+        green.appendSlice(b.allocator, "\x1b[38;2;60;196;90;48;2;60;196;90m") catch @panic("OOM");
+        for (0..128) |_| green.appendSlice(b.allocator, "▀") catch @panic("OOM");
+        green.appendSlice(b.allocator, "\x1b[0m\n") catch @panic("OOM");
+    }
+    run_self_test.expectStdOutEqual(green.items);
     run_self_test.expectExitCode(0);
     test_step.dependOn(&run_self_test.step);
 
@@ -101,14 +108,14 @@ pub fn build(b: *std.Build) void {
     run_fault.expectExitCode(1);
     test_step.dependOn(&run_fault.step);
 
-    const full = b.allocator.alloc(u8, 0x8000 + 1) catch @panic("OOM");
-    @memset(full, 0);
-    const fits = b.addRunArtifact(run_exe);
-    fits.addFileArg(b.addWriteFiles().add("full.bin", full[0..0x8000]));
-    fits.expectExitCode(0);
-    test_step.dependOn(&fits.step);
+    const zeros = b.allocator.alloc(u8, 0x8000 + 1) catch @panic("OOM");
+    @memset(zeros, 0);
+    const run_full = b.addRunArtifact(run_exe);
+    run_full.addFileArg(b.addWriteFiles().add("full.bin", zeros[0..0x8000]));
+    run_full.expectExitCode(0);
+    test_step.dependOn(&run_full.step);
     const too_big = b.addRunArtifact(run_exe);
-    too_big.addFileArg(b.addWriteFiles().add("big.bin", full));
+    too_big.addFileArg(b.addWriteFiles().add("big.bin", zeros));
     too_big.expectStdErrMatch("big.bin: the program does not fit in memory\n");
     too_big.expectExitCode(1);
     test_step.dependOn(&too_big.step);

@@ -2,9 +2,11 @@ const std = @import("std");
 
 const figment = @import("figment");
 
-pub const max_steps = 10_000_000;
+const max_steps = 10_000_000;
 
-pub fn render(w: *std.Io.Writer, screen: *const [figment.screen_size * figment.screen_size]u8) std.Io.Writer.Error!void {
+const Screen = [figment.screen_size * figment.screen_size]u8;
+
+pub fn render(w: *std.Io.Writer, screen: *const Screen) std.Io.Writer.Error!void {
     for (0..figment.screen_size / 2) |row| {
         var last: ?[2]u4 = null;
         for (0..figment.screen_size) |x| {
@@ -62,9 +64,9 @@ fn times(comptime s: []const u8, comptime n: usize) []const u8 {
     return out;
 }
 
-const blank: [figment.screen_size * figment.screen_size]u8 = @splat(0);
+const blank: Screen = @splat(0);
 
-fn expectRender(screen: *const [figment.screen_size * figment.screen_size]u8, expected: []const u8) !void {
+fn expectRender(screen: *const Screen, expected: []const u8) !void {
     var out: std.Io.Writer.Allocating = .init(testing.allocator);
     defer out.deinit();
     try render(&out.writer, screen);
