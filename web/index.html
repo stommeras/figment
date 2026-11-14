@@ -63,7 +63,7 @@
   .led[data-state="halted"] { --led: var(--yellow); }
   .led[data-state="faulted"], .led[data-state="error"] { --led: var(--red); }
   .controls {
-    --button: min(44px, 12vw);
+    --button-size: min(44px, 12vw);
     display: grid;
     grid-template-columns: auto auto;
     justify-content: space-between;
@@ -76,16 +76,22 @@
     -webkit-touch-callout: none;
   }
   [data-key] { cursor: pointer; }
-  .dpad { --cross: calc(3 * var(--button)); display: grid; grid-template: repeat(3, var(--button)) / repeat(3, var(--button)); filter: drop-shadow(0 3px 0 var(--black)); }
+  .dpad {
+    --cross: calc(3 * var(--button-size));
+    display: grid;
+    grid-template: repeat(3, var(--button-size)) / repeat(3, var(--button-size));
+    filter: drop-shadow(0 3px 0 var(--black));
+  }
   .dpad::before, .dpad::after {
     content: "";
     background: var(--cross-tilt, none) center / var(--cross) var(--cross) no-repeat, var(--bezel);
     border-radius: 6px;
   }
-  .dpad:has(.up[data-held]) { --cross-tilt: linear-gradient(to bottom, rgb(0 0 0 / 40%), transparent 50%, rgb(255 255 255 / 6%)); }
-  .dpad:has(.down[data-held]) { --cross-tilt: linear-gradient(to top, rgb(0 0 0 / 40%), transparent 50%, rgb(255 255 255 / 6%)); }
-  .dpad:has(.left[data-held]) { --cross-tilt: linear-gradient(to right, rgb(0 0 0 / 40%), transparent 50%, rgb(255 255 255 / 6%)); }
-  .dpad:has(.right[data-held]) { --cross-tilt: linear-gradient(to left, rgb(0 0 0 / 40%), transparent 50%, rgb(255 255 255 / 6%)); }
+  .dpad:has([data-held]) { --cross-tilt: linear-gradient(var(--tilt-toward), rgb(0 0 0 / 40%), transparent 50%, rgb(255 255 255 / 6%)); }
+  .dpad:has(.up[data-held]) { --tilt-toward: to bottom; }
+  .dpad:has(.down[data-held]) { --tilt-toward: to top; }
+  .dpad:has(.left[data-held]) { --tilt-toward: to right; }
+  .dpad:has(.right[data-held]) { --tilt-toward: to left; }
   .dpad::before { grid-area: 1 / 2 / 4 / 3; }
   .dpad::after { grid-area: 2 / 1 / 3 / 4; }
   .dpad span { z-index: 1; display: grid; place-content: center; border-radius: 6px; }
@@ -94,10 +100,10 @@
   .dpad .left { grid-area: 2 / 1; rotate: -90deg; }
   .dpad .right { grid-area: 2 / 3; rotate: 90deg; }
   .dpad .down { grid-area: 3 / 2; rotate: 180deg; }
-  .middle { grid-column: 1 / -1; order: 1; display: grid; justify-items: center; gap: 8px; }
+  .start-select { grid-column: 1 / -1; order: 1; display: grid; justify-items: center; gap: 8px; }
   .brand { font-size: 11px; font-weight: 700; letter-spacing: 0.3em; color: var(--bezel); }
-  .pills { display: flex; gap: 8px; }
-  .pills span {
+  .start-select-buttons { display: flex; gap: 8px; }
+  .start-select-buttons span {
     padding: 6px 10px;
     border-radius: 14px;
     background: var(--bezel);
@@ -107,11 +113,11 @@
     font-weight: 700;
     letter-spacing: 0.1em;
   }
-  .pills span[data-held] { translate: 0 1px; box-shadow: none; }
-  .buttons { display: flex; gap: 12px; padding-right: 4px; transform: rotate(-20deg); }
+  .start-select-buttons span[data-held] { translate: 0 1px; box-shadow: none; }
+  .buttons { display: flex; gap: 12px; padding-right: 4px; rotate: -20deg; }
   .buttons span {
-    width: var(--button);
-    height: var(--button);
+    width: var(--button-size);
+    height: var(--button-size);
     border-radius: 50%;
     display: grid;
     place-content: center;
@@ -162,8 +168,8 @@
   </div>
   <div class="controls" aria-hidden="true">
     <div class="dpad"><span class="up" data-key="ArrowUp"></span><span class="left" data-key="ArrowLeft"></span><span class="right" data-key="ArrowRight"></span><span class="down" data-key="ArrowDown"></span></div>
-    <div class="middle">
-      <div class="pills"><span data-key="Shift">SELECT</span><span data-key="Enter">START</span></div>
+    <div class="start-select">
+      <div class="start-select-buttons"><span data-key="Shift">SELECT</span><span data-key="Enter">START</span></div>
       <span class="brand">FIGMENT</span>
     </div>
     <div class="buttons"><span data-key="x">B</span><span data-key="z">A</span></div>
@@ -262,18 +268,29 @@ addEventListener("keydown", (event) => {
   keys |= bit;
 });
 addEventListener("keyup", (event) => { keys &= ~keyBit(event); });
+// A touch pointerdown does not let a page start sound, but pointerup does.
+addEventListener("pointerup", startAudio);
+
+const buttons = [...document.querySelectorAll("[data-key]")].map((element) => ({ element, bit: keyBits[element.dataset.key] }));
+const pointerKeys = new Map();
+
+function buttonBitAt(event) {
+  const element = document.elementFromPoint(event.clientX, event.clientY)?.closest("[data-key]");
+  return element ? keyBits[element.dataset.key] : 0;
+}
+
+addEventListener("pointerdown", (event) => {
+  const bit = buttonBitAt(event);
+  if (bit) pointerKeys.set(event.pointerId, bit);
+});
+addEventListener("pointermove", (event) => {
+  if (pointerKeys.has(event.pointerId)) pointerKeys.set(event.pointerId, buttonBitAt(event));
+});
+for (const type of ["pointerup", "pointercancel"]) addEventListener(type, (event) => pointerKeys.delete(event.pointerId));
 addEventListener("blur", () => {
   keys = 0;
   pointerKeys.clear();
 });
-addEventListener("pointerdown", startAudio);
-
-const buttons = [...document.querySelectorAll("[data-key]")];
-const pointerKeys = new Map();
-for (const button of buttons) {
-  button.addEventListener("pointerdown", (event) => pointerKeys.set(event.pointerId, keyBits[button.dataset.key]));
-}
-for (const type of ["pointerup", "pointercancel"]) addEventListener(type, (event) => pointerKeys.delete(event.pointerId));
 document.querySelector(".controls").addEventListener("contextmenu", (event) => event.preventDefault());
 
 function heldKeys() {
@@ -288,7 +305,7 @@ function frame(now) {
   const machine = new Uint8Array(wasm.memory.buffer, wasm.memory_ptr(), memorySize);
   let state = wasm.state();
   const held = heldKeys();
-  for (const button of buttons) button.toggleAttribute("data-held", (held & keyBits[button.dataset.key]) !== 0);
+  for (const { element, bit } of buttons) element.toggleAttribute("data-held", (held & bit) !== 0);
   for (; lag >= frameTime; lag -= frameTime) {
     machine[keysAddress] = held;
     state = wasm.step(stepsPerFrame);
