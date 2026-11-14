@@ -125,7 +125,7 @@ new_match:
         CALL setup
         JMP new_round
 
-; Gives player rB color r1, left key r2, right key r3 and no points.
+; Gives player rB color r1, left key r2, right key r3 and no points. Uses r0, r5, r6, rE and rF.
 setup:  CALL load_player
         ST r1, [CUR_COLOR]
         ST r2, [CUR_LEFT_KEY]
@@ -144,11 +144,11 @@ new_round:
 .again: CALL random_spot
         MOV r0, r1
         MOV r5, r3
-        CALL close
+        CALL within_16
         JNC .far
         MOV r0, r2
         MOV r5, r4
-        CALL close
+        CALL within_16
         JC .again
 .far:   LDI rB, lo(P2)
         CALL place
@@ -156,8 +156,8 @@ new_round:
         ST r0, [STATE]
         JMP draw_status
 
-; Sets C if r0 and r5 differ by less than 16.
-close:  SUB r0, r5
+; Sets C if r0 and r5 differ by less than 16. Uses r0.
+within_16:  SUB r0, r5
         ADD r0, 15
         CMP r0, 31
         RET
@@ -173,6 +173,7 @@ random_spot:
         RET
 
 ; Puts player rB's head at r1, r2, facing a random way, and draws it. Keeps r3 and r4.
+; Uses r0, r5, r6, rE and rF.
 place:  CALL load_player
         ST r1, [CUR_X]
         ST r2, [CUR_Y]
@@ -340,18 +341,21 @@ meet:   LDI rB, lo(P1)
         CALL targets
         JZ .end
         CMP r7, r1
-        JNZ .a
+        JNZ .corner_head
         CMP r8, r2
         JZ .both
-.a:     CMP r7, r3
-        JNZ .b
+.corner_head:
+        CMP r7, r3
+        JNZ .head_corner
         CMP r8, r4
         JZ .both
-.b:     CMP r9, r1
-        JNZ .c
+.head_corner:
+        CMP r9, r1
+        JNZ .head_head
         CMP rA, r2
         JZ .both
-.c:     CMP r9, r3
+.head_head:
+        CMP r9, r3
         JNZ .end
         CMP rA, r4
         JNZ .end
