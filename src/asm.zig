@@ -583,33 +583,34 @@ fn runFrame(m: *figment.Machine) !usize {
 
 const rogue_source = @embedFile("rogue.asm");
 
-/// The value of a constant that programs/rogue.asm defines, such as `PLAYER_X = 0x3100`.
-fn rogueConstant(comptime name: []const u8) usize {
-    const start = std.mem.find(u8, rogue_source, "\n" ++ name ++ " = ").? + name.len + 4;
-    const end = std.mem.findAny(u8, rogue_source[start..], " \n").? + start;
-    return std.fmt.parseInt(usize, rogue_source[start..end], 0) catch unreachable;
+/// The value of a constant that a program defines, such as `PLAYER_X = 0x3100`.
+fn constant(comptime source: []const u8, comptime name: []const u8) usize {
+    @setEvalBranchQuota(100_000);
+    const start = std.mem.find(u8, source, "\n" ++ name ++ " = ").? + name.len + 4;
+    const end = std.mem.findAny(u8, source[start..], " \n").? + start;
+    return std.fmt.parseInt(usize, source[start..end], 0) catch unreachable;
 }
 
 const rogue = struct {
-    const map = rogueConstant("MAP");
-    const player_x = rogueConstant("PLAYER_X");
-    const player_y = rogueConstant("PLAYER_Y");
-    const depth_tens = rogueConstant("DEPTH_TENS");
-    const depth_ones = rogueConstant("DEPTH_ONES");
-    const player_hp = rogueConstant("PLAYER_HP");
-    const dead = rogueConstant("DEAD");
-    const monster_x = rogueConstant("MONSTER_X");
-    const monster_y = rogueConstant("MONSTER_Y");
-    const monster_hp = rogueConstant("MONSTER_HP");
-    const monsters = rogueConstant("MONSTERS");
-    const turn = rogueConstant("TURN");
-    const max_hp = rogueConstant("MAX_HP");
-    const wall = rogueConstant("WALL");
-    const stairs = rogueConstant("STAIRS");
-    const heart = rogueConstant("HEART");
+    const map = constant(rogue_source, "MAP");
+    const player_x = constant(rogue_source, "PLAYER_X");
+    const player_y = constant(rogue_source, "PLAYER_Y");
+    const depth_tens = constant(rogue_source, "DEPTH_TENS");
+    const depth_ones = constant(rogue_source, "DEPTH_ONES");
+    const player_hp = constant(rogue_source, "PLAYER_HP");
+    const dead = constant(rogue_source, "DEAD");
+    const monster_x = constant(rogue_source, "MONSTER_X");
+    const monster_y = constant(rogue_source, "MONSTER_Y");
+    const monster_hp = constant(rogue_source, "MONSTER_HP");
+    const monsters = constant(rogue_source, "MONSTERS");
+    const turn = constant(rogue_source, "TURN");
+    const max_hp = constant(rogue_source, "MAX_HP");
+    const wall = constant(rogue_source, "WALL");
+    const stairs = constant(rogue_source, "STAIRS");
+    const heart = constant(rogue_source, "HEART");
     const right = 0b1000;
-    const left = rogueConstant("LEFT");
-    const up = rogueConstant("UP");
+    const left = constant(rogue_source, "LEFT");
+    const up = constant(rogue_source, "UP");
 };
 
 fn tile(m: *figment.Machine, x: usize, y: usize) *u8 {
@@ -998,4 +999,235 @@ test "the demo ends every frame well inside the 100,000 instructions SPEC.md all
         }
     }
     try testing.expect(most < 200);
+}
+
+const tangle_source = @embedFile("tangle.asm");
+
+const tangle = struct {
+    const players = [2]usize{ constant(tangle_source, "P1"), constant(tangle_source, "P2") };
+    const state = constant(tangle_source, "STATE");
+    const playing = constant(tangle_source, "PLAYING");
+    const over = constant(tangle_source, "OVER");
+    const ready = constant(tangle_source, "READY");
+    const pause_frames = constant(tangle_source, "PAUSE_FRAMES");
+    const steps = constant(tangle_source, "STEPS");
+    const turn_steps = constant(tangle_source, "TURN_STEPS");
+    const navy = constant(tangle_source, "NAVY");
+    const gray = constant(tangle_source, "GRAY");
+    const yellow = constant(tangle_source, "YELLOW");
+    const blue = constant(tangle_source, "BLUE");
+    const start = constant(tangle_source, "START");
+    const left = constant(tangle_source, "LEFT");
+    const right = constant(tangle_source, "RIGHT");
+};
+
+/// Player `p`'s copy of the CUR field `name`, such as `CUR_X_HI`.
+fn tangleField(m: *figment.Machine, p: usize, comptime name: []const u8) *u8 {
+    return &m.memory[tangle.players[p] + constant(tangle_source, name) - constant(tangle_source, "CUR")];
+}
+
+fn screenPixel(m: *figment.Machine, x: usize, y: usize) *u8 {
+    return &m.memory[figment.screen_start + y * 128 + x];
+}
+
+fn startTangle(m: *figment.Machine, seed: u64) !void {
+    var diagnostic: Diagnostic = .{};
+    const program = try assemble(testing.allocator, tangle_source, &diagnostic);
+    defer testing.allocator.free(program);
+    m.reset(seed);
+    @memcpy(m.memory[0..program.len], program);
+    _ = try runFrame(m);
+}
+
+/// Repaints the field empty, as a new round leaves it, without the heads.
+fn emptyField(m: *figment.Machine) void {
+    for (8..128) |y| for (0..128) |x| {
+        screenPixel(m, x, y).* = if (x == 0 or x == 127 or y == 8 or y == 127) tangle.gray else tangle.navy;
+    };
+}
+
+/// Puts player `p`'s head in the middle of pixel x, y, facing `dir`, as a new round would.
+fn putHead(m: *figment.Machine, p: usize, x: u8, y: u8, dir: u8) void {
+    tangleField(m, p, "CUR_X_LO").* = 0x80;
+    tangleField(m, p, "CUR_X_HI").* = x;
+    tangleField(m, p, "CUR_Y_LO").* = 0x80;
+    tangleField(m, p, "CUR_Y_HI").* = y;
+    tangleField(m, p, "CUR_DIR").* = dir;
+    tangleField(m, p, "CUR_TURN_WAIT").* = 0;
+    tangleField(m, p, "CUR_ALIVE").* = 1;
+    tangleField(m, p, "CUR_MOVED").* = 0;
+    inline for (.{ "OLD", "CORNER" }) |name| {
+        tangleField(m, p, "CUR_" ++ name ++ "_X").* = x;
+        tangleField(m, p, "CUR_" ++ name ++ "_Y").* = y;
+    }
+    screenPixel(m, x, y).* = tangleField(m, p, "CUR_COLOR").*;
+}
+
+/// An empty field with player 1 at x, y facing `dir`, and player 2 out of the way
+/// near the bottom left, heading right.
+fn tangleRound(m: *figment.Machine, x: u8, y: u8, dir: u8) !void {
+    try startTangle(m, 0);
+    emptyField(m);
+    putHead(m, 0, x, y, dir);
+    putHead(m, 1, 10, 120, 0);
+    m.memory[figment.keys] = @intCast(tangle.start);
+    _ = try runFrame(m);
+    m.memory[figment.keys] = 0;
+    try testing.expectEqual(tangle.playing, m.memory[tangle.state]);
+}
+
+fn runFrames(m: *figment.Machine, keys: usize, frames: usize) !void {
+    m.memory[figment.keys] = @intCast(keys);
+    for (0..frames) |_| _ = try runFrame(m);
+    m.memory[figment.keys] = 0;
+}
+
+test "tangle steers by a table of round(127 * sin) over 32 directions" {
+    var expected: [40]u8 = undefined;
+    for (&expected, 0..) |*byte, i| {
+        const angle = 2 * std.math.pi * @as(f64, @floatFromInt(i)) / 32;
+        byte.* = @bitCast(@as(i8, @intFromFloat(@round(127 * @sin(angle)))));
+    }
+    var diagnostic: Diagnostic = .{};
+    const program = try assemble(testing.allocator, tangle_source, &diagnostic);
+    defer testing.allocator.free(program);
+    try testing.expect(std.mem.find(u8, program, &expected) != null);
+}
+
+test "tangle starts each round on an empty field with the heads apart, waiting for Start" {
+    for (0..20) |seed| {
+        var m: figment.Machine = undefined;
+        try startTangle(&m, seed);
+        try testing.expectEqual(tangle.ready, m.memory[tangle.state]);
+        var heads: [2][2]usize = undefined;
+        for (0..2) |p| {
+            const x = tangleField(&m, p, "CUR_X_HI").*;
+            const y = tangleField(&m, p, "CUR_Y_HI").*;
+            try testing.expect(x >= 16 and x <= 127 - 16 and y >= 8 + 16 and y <= 127 - 16);
+            try testing.expectEqual(1, tangleField(&m, p, "CUR_ALIVE").*);
+            try testing.expectEqual(tangleField(&m, p, "CUR_COLOR").*, screenPixel(&m, x, y).*);
+            heads[p] = .{ x, y };
+        }
+        const dx = @max(heads[0][0], heads[1][0]) - @min(heads[0][0], heads[1][0]);
+        const dy = @max(heads[0][1], heads[1][1]) - @min(heads[0][1], heads[1][1]);
+        try testing.expect(dx >= 16 or dy >= 16);
+        for (8..128) |y| for (0..128) |x| {
+            const head = (x == heads[0][0] and y == heads[0][1]) or (x == heads[1][0] and y == heads[1][1]);
+            if (head) continue;
+            const border = x == 0 or x == 127 or y == 8 or y == 127;
+            try testing.expectEqual(if (border) tangle.gray else tangle.navy, screenPixel(&m, x, y).*);
+        };
+        // Nothing moves until Start.
+        try runFrames(&m, tangle.left | tangle.right, 30);
+        try testing.expectEqual(heads[0][0], tangleField(&m, 0, "CUR_X_HI").*);
+        try testing.expectEqual(tangle.ready, m.memory[tangle.state]);
+    }
+}
+
+test "tangle moves a head under half a pixel a step and leaves an unbroken line" {
+    var m: figment.Machine = undefined;
+    try tangleRound(&m, 40, 60, 0);
+    const frames = 64;
+    try runFrames(&m, 0, frames);
+    const x = 40 + (0x80 + 127 * tangle.steps * frames) / 256;
+    try testing.expectEqual(x, tangleField(&m, 0, "CUR_X_HI").*);
+    try testing.expectEqual(60, tangleField(&m, 0, "CUR_Y_HI").*);
+    for (40..x + 1) |column| try testing.expectEqual(tangle.yellow, screenPixel(&m, column, 60).*);
+    try testing.expectEqual(tangle.navy, screenPixel(&m, x + 1, 60).*);
+    try testing.expectEqual(tangle.navy, screenPixel(&m, 39, 60).*);
+}
+
+test "tangle turns a held key once every TURN_STEPS steps, and not with both held" {
+    var m: figment.Machine = undefined;
+    try tangleRound(&m, 64, 64, 0);
+    const dir = tangleField(&m, 0, "CUR_DIR");
+    try runFrames(&m, tangle.right, 10);
+    try testing.expectEqual((10 * tangle.steps + tangle.turn_steps - 1) / tangle.turn_steps, dir.*);
+    const after_right = dir.*;
+    try runFrames(&m, tangle.left | tangle.right, 5);
+    try testing.expectEqual(after_right, dir.*);
+    try runFrames(&m, tangle.left, 14);
+    const turns = (14 * tangle.steps + tangle.turn_steps - 1) / tangle.turn_steps;
+    try testing.expectEqual((after_right + 32 - turns) % 32, dir.*);
+}
+
+test "tangle stops a head that runs into the border or a taken pixel, then starts a new round" {
+    var m: figment.Machine = undefined;
+    try tangleRound(&m, 124, 60, 0);
+    try runFrames(&m, 0, 20);
+    try testing.expectEqual(0, tangleField(&m, 0, "CUR_ALIVE").*);
+    try testing.expectEqual(1, tangleField(&m, 1, "CUR_ALIVE").*);
+    try testing.expectEqual(tangle.over, m.memory[tangle.state]);
+    try testing.expectEqual(tangle.gray, screenPixel(&m, 127, 60).*);
+    try runFrames(&m, 0, tangle.pause_frames);
+    try testing.expectEqual(tangle.ready, m.memory[tangle.state]);
+
+    try tangleRound(&m, 40, 60, 0);
+    screenPixel(&m, 50, 60).* = tangle.blue;
+    try runFrames(&m, 0, 40);
+    try testing.expectEqual(0, tangleField(&m, 0, "CUR_ALIVE").*);
+    try testing.expectEqual(50, tangleField(&m, 0, "CUR_X_HI").*);
+    try testing.expectEqual(tangle.blue, screenPixel(&m, 50, 60).*);
+    try testing.expectEqual(tangle.yellow, screenPixel(&m, 49, 60).*);
+}
+
+test "tangle stops a head that meets a line on the diagonal instead of slipping through" {
+    var m: figment.Machine = undefined;
+    // A line the other way across the head's path, with pixels touching only at corners.
+    try tangleRound(&m, 40, 40, 4);
+    for (30..71) |y| screenPixel(&m, 101 - y, y).* = tangle.blue;
+    try runFrames(&m, 0, 60);
+    try testing.expectEqual(0, tangleField(&m, 0, "CUR_ALIVE").*);
+    try testing.expectEqual(51, tangleField(&m, 0, "CUR_CORNER_X").*);
+    try testing.expectEqual(50, tangleField(&m, 0, "CUR_CORNER_Y").*);
+}
+
+test "tangle stops both heads when they reach the same pixel in the same step" {
+    var m: figment.Machine = undefined;
+    // Both heads 20 pixels from pixel 60, 60, one from the left and one from the right.
+    try tangleRound(&m, 40, 60, 0);
+    putHead(&m, 1, 80, 60, 16);
+    try runFrames(&m, 0, 60);
+    for (0..2) |p| try testing.expectEqual(0, tangleField(&m, p, "CUR_ALIVE").*);
+    try testing.expectEqual(60, tangleField(&m, 0, "CUR_X_HI").*);
+    try testing.expectEqual(60, tangleField(&m, 1, "CUR_X_HI").*);
+    try testing.expectEqual(tangle.navy, screenPixel(&m, 60, 60).*);
+    try testing.expectEqual(tangle.over, m.memory[tangle.state]);
+}
+
+test "tangle keeps heads in the field and lines 4-connected through many rounds" {
+    var m: figment.Machine = undefined;
+    try startTangle(&m, 7);
+    var r: std.Random.DefaultPrng = .init(3);
+    var rounds: usize = 0;
+    var before: [2][2]u8 = undefined;
+    for (0..20_000) |i| {
+        // Change the held keys every 8 frames, so turns are held for a while.
+        if (i % 8 == 0) m.memory[figment.keys] = r.random().int(u8);
+        const state_before = m.memory[tangle.state];
+        for (0..2) |p| before[p] = .{ tangleField(&m, p, "CUR_X_HI").*, tangleField(&m, p, "CUR_Y_HI").* };
+        _ = try runFrame(&m);
+        const state = m.memory[tangle.state];
+        rounds += @intFromBool(state_before == tangle.playing and state == tangle.over);
+        if (state_before != tangle.playing) continue;
+        for (0..2) |p| {
+            const x = tangleField(&m, p, "CUR_X_HI").*;
+            const y = tangleField(&m, p, "CUR_Y_HI").*;
+            try testing.expect(x < 128 and y >= 8 and y < 128);
+            try testing.expect(@max(x, before[p][0]) - @min(x, before[p][0]) <= tangle.steps);
+            try testing.expect(@max(y, before[p][1]) - @min(y, before[p][1]) <= tangle.steps);
+            if (tangleField(&m, p, "CUR_ALIVE").* == 0) continue;
+            try testing.expectEqual(tangleField(&m, p, "CUR_COLOR").*, screenPixel(&m, x, y).*);
+            if (tangleField(&m, p, "CUR_MOVED").* == 0) continue;
+            const old_x = tangleField(&m, p, "CUR_OLD_X").*;
+            const old_y = tangleField(&m, p, "CUR_OLD_Y").*;
+            const corner_x = tangleField(&m, p, "CUR_CORNER_X").*;
+            const corner_y = tangleField(&m, p, "CUR_CORNER_Y").*;
+            // The corner touches both the old head and the new one along an edge, or is the new one.
+            try testing.expect(corner_x == x and (corner_y == old_y or corner_y == y));
+            try testing.expect(old_x == x or old_y == y or corner_y == old_y);
+            try testing.expectEqual(tangleField(&m, p, "CUR_COLOR").*, screenPixel(&m, corner_x, corner_y).*);
+        }
+    }
+    try testing.expect(rounds >= 10);
 }

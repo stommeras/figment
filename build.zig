@@ -51,7 +51,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .imports = &.{.{ .name = "figment", .module = core }},
     });
-    const programs = [_][]const u8{ "self-test", "demo", "rogue" };
+    const programs = [_][]const u8{ "self-test", "demo", "rogue", "tangle" };
     for (programs) |name| {
         const source = b.fmt("{s}.asm", .{name});
         asm_module.addAnonymousImport(source, .{ .root_source_file = b.path(b.fmt("programs/{s}", .{source})) });
