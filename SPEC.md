@@ -186,7 +186,7 @@ A test program paints the screen green (`0x0B`) when it passes and red (`0x08`) 
 
 `zig build` installs the page to `zig-out/web`, together with `figment.wasm`, `self-test.bin`, `demo.bin` and `rogue.bin`, which are `programs/self-test.asm`, `programs/demo.asm` and `programs/rogue.asm` assembled. Any static file server can serve the folder. `zig build serve` builds and serves it with `python3 -m http.server`.
 
-The page loads the file its `program` query parameter names, `self-test.bin` without one, or a `.bin` file the user picks. It refuses a file larger than 32,768 bytes with a message and keeps running the program it has. It calls `reset` with a random seed, copies the program in, and then runs frames as the timing part of milestone 5 describes, drawing the screen to a canvas. It shows the state under the canvas.
+The page loads the file its `program` query parameter names, `self-test.bin` without one, or a `.bin` file the user picks. It refuses a file larger than 32,768 bytes with a message and keeps running the program it has. It calls `reset` with a random seed, copies the program in, and then runs frames as the timing part of milestone 5 describes, drawing the screen to a canvas. It shows the program's name and the state under the canvas, and the program's name in the tab title.
 
 ### The terminal renderer
 
