@@ -4,6 +4,10 @@ const std = @import("std");
 pub const memory_size = 0x8000;
 pub const stack_start = 0x3F00;
 pub const screen_start = 0x4000;
+pub const screen_size = 128;
+
+/// The 16 screen colors from SPEC.md as red, green and blue.
+pub const palette: [16][3]u8 = @splat(.{ 0, 0, 0 });
 
 /// The numbers are the ones `state()` returns to the host.
 pub const State = enum(u32) { running = 0, halted = 1, faulted = 2 };

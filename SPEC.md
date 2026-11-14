@@ -147,13 +147,36 @@ The program must fit in 32,768 bytes.
 
 The screen is 128 by 128 pixels, one byte per pixel, row by row from the top left. The pixel at column `x` and row `y` is at address `0x4000 + y * 128 + x`. The host uses the low 4 bits of the byte as an index into a fixed palette of 16 colors and ignores the high 4 bits.
 
-Milestone 4 chooses the 16 colors.
+| Index | Color | Index | Color |
+| --- | --- | --- | --- |
+| `0` | `#000000` black | `8` | `#E8343F` red |
+| `1` | `#1D2340` navy | `9` | `#F28A1E` orange |
+| `2` | `#5A2A5E` plum | `A` | `#F6D23A` yellow |
+| `3` | `#1F6B52` pine | `B` | `#3CC45A` green |
+| `4` | `#8A4B2A` brown | `C` | `#3A8EF0` blue |
+| `5` | `#4A4F5C` slate | `D` | `#8A6AD8` violet |
+| `6` | `#A7ADB8` gray | `E` | `#F27FB0` pink |
+| `7` | `#F4F1E8` white | `F` | `#F6C79A` sand |
+
+A test program paints the screen green (`0x0B`) when it passes and red (`0x08`) when it fails.
+
+### The page
+
+`zig build` installs the page to `zig-out/web`, together with `figment.wasm` and `self-test.bin`, which is `programs/self-test.asm` assembled. Any static file server can serve the folder, for example `python3 -m http.server -d zig-out/web`.
+
+The page loads `self-test.bin`, or a `.bin` file the user picks. It calls `reset` with a random seed, copies the program in, and then on every animation frame runs `step(100000)` and draws the screen to a canvas. It shows the state under the canvas. Milestone 5 replaces the fixed 100,000 with a measured speed.
+
+### The terminal renderer
+
+`zig build` also installs `zig-out/bin/figment-run`. `figment-run program.bin` resets the machine with seed 0, loads the program, and runs it until it halts or faults or has run 10,000,000 instructions. It then prints the screen to standard output, two pixel rows per line of text. Each character is `▀` with the upper pixel as the 24-bit foreground color and the lower pixel as the background color, and each line ends with `ESC[0m`.
+
+It exits with 0 when the machine halted or is still running. When the machine faulted it prints the screen, then `faulted at 0x` and `PC` in four hex digits to standard error, and exits with 1. Any other error, such as a program that cannot be read or is larger than 32,768 bytes, also exits with 1.
 
 ## Keys, beeper, random and timing (milestone 5)
 
 These are addresses in the I/O page. The program reads one address for the keys, writes one for the beeper, and reads one to get a random byte from xoshiro256++, seeded by the host at reset. Milestone 5 sets the addresses, the key layout, the beeper pitch and how a program waits for the next frame.
 
-The host decides how fast the machine runs. Milestone 4 or 5 picks a default speed once a real program exists to measure.
+The host decides how fast the machine runs. Milestone 5 picks a default speed once a real program exists to measure.
 
 ## Host interface
 
@@ -165,6 +188,7 @@ The core is a `wasm32` module that imports nothing. It exports its `memory` and 
 | `reset(seed)` | Resets the machine. The seed is for the random generator and is ignored until milestone 5 |
 | `step(n) -> u32` | Executes up to `n` instructions, stops early if the machine halts or faults, and returns the state |
 | `state() -> u32` | Returns 0 for running, 1 for halted, 2 for faulted |
+| `palette_ptr() -> u32` | Returns the byte offset of the palette inside `memory`: 16 colors of 3 bytes each, red, green and blue, in index order |
 
 The host must call `reset` before `step` or `state`. Until then the machine's contents are undefined. The host loads a program by calling `reset` and then copying the program to `memory_ptr()`. The release build is `ReleaseSmall`.
 

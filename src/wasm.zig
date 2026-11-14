@@ -27,6 +27,10 @@ export fn state() u32 {
     return @backingInt(machine.state);
 }
 
+export fn palette_ptr() u32 {
+    return 0;
+}
+
 test "reset returns the machine to running" {
     machine.state = .halted;
     try std.testing.expectEqual(1, state());
@@ -81,7 +85,7 @@ test "the built wasm module imports nothing and exports its memory" {
         i += size;
     }
     // Each export is a length-prefixed name followed by its kind, 0 for a function and 2 for memory.
-    for ([_][]const u8{ "\x06memory\x02", "\x0Amemory_ptr\x00", "\x05reset\x00", "\x04step\x00", "\x05state\x00" }) |entry| {
+    for ([_][]const u8{ "\x06memory\x02", "\x0Amemory_ptr\x00", "\x05reset\x00", "\x04step\x00", "\x05state\x00", "\x0Bpalette_ptr\x00" }) |entry| {
         try std.testing.expect(std.mem.find(u8, exports, entry) != null);
     }
 }
