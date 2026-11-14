@@ -9,6 +9,7 @@ Figment is a made-up 8-bit console. This file defines the machine, so that the e
 | 3 | The assembler |
 | 4 | The screen on a page, the palette colors, the terminal renderer |
 | 5 | Keys, the beeper, random, timing |
+| 6 | Constants, `lo` and `hi`, and local labels in the assembler |
 
 ## The machine
 
@@ -124,15 +125,18 @@ An unknown opcode is the only fault. Register numbers and addresses cannot be ou
 
 A line holds an optional label, then an optional instruction or directive. `;` starts a comment that runs to the end of the line.
 
-- A label is a name followed by `:`. Its value is the address of the next byte the assembler emits. A name starts with a letter or `_` and goes on with letters, digits and `_`. Names are case-sensitive, a name is defined once, and a register name cannot be a label.
+- A label is a name followed by `:`. Its value is the address of the next byte the assembler emits. A name starts with a letter or `_` and goes on with letters, digits and `_`. Names are case-sensitive, a name is defined once, and a register name cannot be a label or constant.
+- A local label is a dot and a name followed by `:`, as in `.loop:` (milestone 6). It belongs to the nearest label above it that has no dot, and only operands under that label reach it, as `.loop`. Another label can use the same local name. A local label with no label above it is an error.
+- A constant is a line `NAME = n`, where `n` is a number (milestone 6). Constants and labels share their names.
 - An instruction is a mnemonic from the instruction table followed by its operands, separated by commas. Mnemonics and register names ignore case.
 - A register is `r0` to `r9` or `rA` to `rF`.
 - A number is decimal, or hexadecimal with `0x`, binary with `0b` or octal with `0o`, with the prefix in either case. `_` may separate digits.
-- An immediate `n` is a number from 0 to 255.
-- An address is a number from 0 to `0xFFFF` or a label. It is written bare after `JMP`, the conditional jumps and `CALL`, and in brackets after `LD` and `ST`, as in `LD r1, [0x1000]`.
+- A value is a number, a label or constant, or `lo(x)` or `hi(x)`, where `x` is a number, a label or a constant (milestone 6). `lo` gives bits 0 to 7 of `x` and `hi` gives bits 8 to 15, and both ignore case. A label or constant can be used before the line that defines it.
+- An immediate `n` is a value from 0 to 255.
+- An address is a value from 0 to `0xFFFF`. It is written bare after `JMP`, the conditional jumps and `CALL`, and in brackets after `LD` and `ST`, as in `LD r1, [0x1000]`.
 - A register pair is written `[h:l]`, as in `ST r1, [r2:r3]`.
 - `ADD` to `XOR` take a register or an immediate as the second operand, and the assembler picks the opcode from it.
-- `.byte n, n, ...` emits each number as one byte.
+- `.byte n, n, ...` emits each immediate as one byte.
 
 The program must fit in 32,768 bytes.
 
@@ -141,6 +145,24 @@ The program must fit in 32,768 bytes.
         LDI r2, 3
         ADD r1, r2      ; r1 is 5
         HLT
+```
+
+This adds up the bytes at `data`, with a register pair as the pointer.
+
+```
+COUNT = 4
+sum:    LDI r1, hi(data)
+        LDI r2, lo(data)
+        LDI r0, 0
+        LDI r3, COUNT
+.next:  LD r4, [r1:r2]
+        ADD r0, r4
+        ADD r2, 1
+        ADC r1, 0
+        SUB r3, 1
+        JNZ .next
+        HLT             ; r0 is 10
+data:   .byte 1, 2, 3, 4
 ```
 
 ## Screen (milestone 4)

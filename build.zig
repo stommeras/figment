@@ -56,6 +56,7 @@ pub fn build(b: *std.Build) void {
         const source = b.fmt("{s}.asm", .{name});
         asm_module.addAnonymousImport(source, .{ .root_source_file = b.path(b.fmt("programs/{s}", .{source})) });
     }
+    asm_module.addAnonymousImport("SPEC.md", .{ .root_source_file = b.path("SPEC.md") });
     const asm_exe = b.addExecutable(.{ .name = "figment-asm", .root_module = asm_module });
     b.installArtifact(asm_exe);
     const asm_tests = b.addTest(.{ .root_module = asm_module, .filters = test_filters });
