@@ -20,15 +20,13 @@ KEYS_BEFORE = 0x3104            ; the keys held last frame
 KEYS_DRAWING = 0x3105           ; the keys held while a new floor was drawn
 BEEP_FRAMES = 0x3106            ; the frames left on the current beep
 PLAYER_HP = 0x3107
-DEAD = 0x3108                   ; 1 once the player is at 0 HP
-; One byte per monster in each table. The tables are MONSTERS bytes apart
-; and share the 0x31 page, so the code only changes the low address byte.
+DEAD = 0x3108
 MONSTER_X = 0x3110
 MONSTER_Y = 0x3114
-MONSTER_HP = 0x3118             ; 0 for a monster that is dead or not on this floor
+MONSTER_HP = 0x3118
 
 MONSTERS = 4
-MAX_HP = 9                      ; the status line shows HP as one digit
+MAX_HP = 9
 MONSTER_MAX_HP = 2
 
 MAP_TILES = 240
@@ -80,7 +78,7 @@ frame:  CALL tick_beep
         AND rC, r1
         AND rC, ARROWS
         JZ .done
-        LD r0, [DEAD]           ; after a death, an arrow starts a new run
+        LD r0, [DEAD]
         CMP r0, 0
         JNZ main
         LD r7, [PLAYER_X]
@@ -125,7 +123,7 @@ frame:  CALL tick_beep
         SUB r0, 1
         ST r0, [r5:r6]
         JNZ .hit_monster
-        CALL draw_cell          ; erase the monster
+        CALL draw_cell
 .hit_monster:
         CALL draw_player
         LDI r0, NOTE_HIT
@@ -166,7 +164,6 @@ descend:
         ST r0, [DEPTH_ONES]
 .end:   RET
 
-; Each live monster hits the player when next to them, or else steps toward them.
 ; Stops when the player dies. Uses r0 to rF except rC.
 run_monsters:
         LDI rD, 0
@@ -198,15 +195,16 @@ monster_turn:
         SUB rE, r7
         LD rF, [PLAYER_Y]
         SUB rF, r8
-        MOV r0, rF              ; next to the player when one is 0 and the other 1 or -1
+        MOV r0, rF
         CMP rE, 0
         JZ .in_line
         CMP rF, 0
         JNZ .step
         MOV r0, rE
 .in_line:
-        ADD r0, 1               ; 1 and -1 become 2 and 0, the only values AND 0xFD clears
-        AND r0, 0xFD
+        CMP r0, 1
+        JZ .hit_player
+        CMP r0, 0xFF
         JZ .hit_player
 .step:  MOV r1, r7
         MOV r2, r8
@@ -257,8 +255,6 @@ monster_turn:
 .end:   RET
 
 ; Sets Z when r7, r8 has no wall and no live monster. Uses r0 and r4 to r6.
-; It does not check for the player. A monster only steps when it is not next to
-; the player, so one step cannot reach the player's tile.
 can_step:
         CALL tile_at
         CMP r0, WALL
@@ -266,7 +262,7 @@ can_step:
         CALL monster_at
         CMP r4, MONSTERS
         RET
-.wall:  CMP r0, 0               ; r0 is WALL, which is not 0, so this clears Z
+.wall:  CMP r0, 0               ; r0 is WALL, not 0, so this clears Z
         RET
 
 die:    LDI r0, 1
@@ -364,8 +360,7 @@ new_floor:
         CALL draw_player
         JMP draw_status
 
-; Puts as many monsters as the depth, up to MONSTERS, on random floor tiles
-; outside the 5 by 5 tiles around the player. Uses r0, r4 to r8 and rC to rE.
+; Uses r0, r4 to r8 and rC to rE.
 place_monsters:
         LDI r5, hi(MONSTER_HP)
         LDI r6, lo(MONSTER_HP)
@@ -382,7 +377,7 @@ place_monsters:
         CMP rC, MONSTERS
         JC .count
 .all:   LDI rC, MONSTERS
-.count: LDI rE, 0               ; give up after 255 tries in all, in a cave too small for them
+.count: LDI rE, 0
 .try:   SUB rE, 1
         JZ .end
         LD r7, [RAND]
@@ -397,7 +392,7 @@ place_monsters:
         CALL monster_at
         CMP r4, MONSTERS
         JNZ .try
-        LD r0, [PLAYER_X]       ; far enough when x or y is 3 or more away
+        LD r0, [PLAYER_X]
         SUB r0, r7
         ADD r0, 2
         CMP r0, 5
