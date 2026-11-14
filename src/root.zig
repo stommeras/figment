@@ -13,6 +13,9 @@ fn address(hi: u8, lo: u8) u15 {
     return @truncate(@as(u16, hi) << 8 | lo);
 }
 
+/// In opcode order, so `0x20 + op` and `0x30 + op` are its two forms.
+const Op = enum(u3) { add, adc, sub, sbc, cmp, @"and", @"or", xor };
+
 pub const Machine = struct {
     memory: [memory_size]u8 = @splat(0),
     r: [16]u8 = @splat(0),
@@ -54,19 +57,19 @@ pub const Machine = struct {
             },
             0x20...0x27 => {
                 self.pc +%= 2;
-                self.alu(@truncate(opcode), a, self.r[b]);
+                self.alu(@fromBackingInt(@intCast(@as(u3, @truncate(opcode)))), a, self.r[b]);
             },
             0x30...0x37 => {
                 self.pc +%= 3;
-                self.alu(@truncate(opcode), a, op2);
+                self.alu(@fromBackingInt(@intCast(@as(u3, @truncate(opcode)))), a, op2);
             },
             0x40 => {
                 self.pc +%= 2;
-                self.setResult(a, self.r[a] << 1, @truncate(self.r[a] >> 7));
+                self.setWithFlags(a, self.r[a] << 1, @truncate(self.r[a] >> 7));
             },
             0x41 => {
                 self.pc +%= 2;
-                self.setResult(a, self.r[a] >> 1, @truncate(self.r[a]));
+                self.setWithFlags(a, self.r[a] >> 1, @truncate(self.r[a]));
             },
             0x50 => {
                 self.pc +%= 4;
@@ -91,7 +94,8 @@ pub const Machine = struct {
                     0x61 => self.z == 1,
                     0x62 => self.z == 0,
                     0x63 => self.c == 1,
-                    else => self.c == 0,
+                    0x64 => self.c == 0,
+                    else => unreachable,
                 };
                 if (taken) self.pc = address(op2, op1);
             },
@@ -117,30 +121,30 @@ pub const Machine = struct {
         }
     }
 
-    fn alu(self: *Machine, op: u3, a: u4, b: u8) void {
+    fn alu(self: *Machine, op: Op, a: u4, b: u8) void {
         const x = self.r[a];
         const result: u8, const carry: u1 = switch (op) {
-            0 => @addWithOverflow(x, b),
-            1 => adc: {
+            .add => @addWithOverflow(x, b),
+            .adc => adc: {
                 const sum = @as(u9, x) +% b +% self.c;
                 break :adc .{ @truncate(sum), @truncate(sum >> 8) };
             },
-            2, 4 => @subWithOverflow(x, b),
-            3 => sbc: {
+            .sub, .cmp => @subWithOverflow(x, b),
+            .sbc => sbc: {
                 const amount = @as(u9, b) +% self.c;
                 break :sbc .{ @truncate(@as(u9, x) -% amount), @intFromBool(amount > x) };
             },
-            5 => .{ x & b, 0 },
-            6 => .{ x | b, 0 },
-            7 => .{ x ^ b, 0 },
+            .@"and" => .{ x & b, 0 },
+            .@"or" => .{ x | b, 0 },
+            .xor => .{ x ^ b, 0 },
         };
-        if (op == 4) {
+        if (op == .cmp) {
             self.z = @intFromBool(result == 0);
             self.c = carry;
-        } else self.setResult(a, result, carry);
+        } else self.setWithFlags(a, result, carry);
     }
 
-    fn setResult(self: *Machine, a: u4, result: u8, carry: u1) void {
+    fn setWithFlags(self: *Machine, a: u4, result: u8, carry: u1) void {
         self.r[a] = result;
         self.z = @intFromBool(result == 0);
         self.c = carry;
@@ -644,46 +648,49 @@ test "SP wraps from 0x0000 to 0x7FFF and back" {
     try std.testing.expectEqual(0x66, m.r[2]);
 }
 
-test "the milestone 2 self-test program paints the screen in its pass color" {
-    const pass_color = 0x0B;
-    const main = [_]u8{
-        0x10, 0x10, 0x5A, // 00 LDI r1, 0x5A
-        0x72, 0x10, // 03 PUSH r1
-        0x73, 0x20, // 05 POP r2
-        0x34, 0x20, 0x5A, // 07 CMP r2, 0x5A
-        0x62, 0xF0, 0x00, // 0A JNZ fail
-        0x70, 0xE0, 0x00, // 0D CALL sub
-        0x34, 0x30, 0x77, // 10 CMP r3, 0x77
-        0x62, 0xF0, 0x00, // 13 JNZ fail
-        0x51, 0x10, 0x00, 0x10, // 16 ST r1, [0x1000]
-        0x10, 0x40, 0x10, // 1A LDI r4, 0x10
-        0x10, 0x50, 0x00, // 1D LDI r5, 0x00
-        0x52, 0x60, 0x45, // 20 LD r6, [r4:r5]
-        0x24, 0x61, // 23 CMP r6, r1
-        0x62, 0xF0, 0x00, // 25 JNZ fail
-        0x10, 0x70, 0x81, // 28 LDI r7, 0x81
-        0x40, 0x70, // 2B SHL r7
-        0x64, 0xF0, 0x00, // 2D JNC fail
-        0x41, 0x70, // 30 SHR r7
-        0x63, 0xF0, 0x00, // 32 JC fail
-        0x35, 0x70, 0x01, // 35 AND r7, 0x01
-        0x61, 0xF0, 0x00, // 38 JZ fail
-        0x37, 0x70, 0x01, // 3B XOR r7, 0x01
-        0x62, 0xF0, 0x00, // 3E JNZ fail
-        0x36, 0x70, 0xA5, // 41 OR r7, 0xA5
-        0x50, 0x80, 0x00, 0x90, // 44 LD r8, [0x9000]
-        0x26, 0x78, // 48 OR r7, r8
-        0x34, 0x70, 0xFF, // 4A CMP r7, 0xFF
-        0x62, 0xF0, 0x00, // 4D JNZ fail
-        0x10, 0x00, pass_color, // 50 LDI r0, pass_color
-        0x60, 0xF3, 0x00, // 53 JMP fill
-    };
+const pass_color = 0x0B;
+const fail_color = 0x08;
+
+const self_test = [_]u8{
+    0x10, 0x10, 0x5A, // 00 LDI r1, 0x5A
+    0x72, 0x10, // 03 PUSH r1
+    0x73, 0x20, // 05 POP r2
+    0x34, 0x20, 0x5A, // 07 CMP r2, 0x5A
+    0x62, 0xF0, 0x00, // 0A JNZ fail
+    0x70, 0xE0, 0x00, // 0D CALL sub
+    0x34, 0x30, 0x77, // 10 CMP r3, 0x77
+    0x62, 0xF0, 0x00, // 13 JNZ fail
+    0x51, 0x10, 0x00, 0x10, // 16 ST r1, [0x1000]
+    0x10, 0x40, 0x10, // 1A LDI r4, 0x10
+    0x10, 0x50, 0x00, // 1D LDI r5, 0x00
+    0x52, 0x60, 0x45, // 20 LD r6, [r4:r5]
+    0x24, 0x61, // 23 CMP r6, r1
+    0x62, 0xF0, 0x00, // 25 JNZ fail
+    0x10, 0x70, 0x81, // 28 LDI r7, 0x81
+    0x40, 0x70, // 2B SHL r7
+    0x64, 0xF0, 0x00, // 2D JNC fail
+    0x41, 0x70, // 30 SHR r7
+    0x63, 0xF0, 0x00, // 32 JC fail
+    0x35, 0x70, 0x01, // 35 AND r7, 0x01
+    0x61, 0xF0, 0x00, // 38 JZ fail
+    0x37, 0x70, 0x01, // 3B XOR r7, 0x01
+    0x62, 0xF0, 0x00, // 3E JNZ fail
+    0x36, 0x70, 0xA5, // 41 OR r7, 0xA5
+    0x50, 0x80, 0x00, 0x90, // 44 LD r8, [0x9000]
+    0x26, 0x78, // 48 OR r7, r8
+    0x34, 0x70, 0xFF, // 4A CMP r7, 0xFF
+    0x62, 0xF0, 0x00, // 4D JNZ fail
+    0x10, 0x00, pass_color, // 50 LDI r0, pass_color
+    0x60, 0xF3, 0x00, // 53 JMP fill
+};
+
+fn runSelfTest(main: []const u8) !Machine {
     const sub = [_]u8{
         0x10, 0x30, 0x77, // E0 LDI r3, 0x77
         0x71, // E3 RET
     };
     const fail_and_fill = [_]u8{
-        0x10, 0x00, 0x08, // F0 fail: LDI r0, 0x08
+        0x10, 0x00, fail_color, // F0 fail: LDI r0, fail_color
         0x10, 0x40, 0x40, // F3 fill: LDI r4, 0x40
         0x10, 0x50, 0x00, // F6 LDI r5, 0x00
         0x53, 0x00, 0x45, // F9 loop: ST r0, [r4:r5]
@@ -693,11 +700,57 @@ test "the milestone 2 self-test program paints the screen in its pass color" {
         0x62, 0xF9, 0x00, // 105 JNZ loop
         0x00, // 108 HLT
     };
-    var m = load(&main);
+    var m = load(main);
     @memcpy(m.memory[0xE0..][0..sub.len], &sub);
     @memcpy(m.memory[0xF0..][0..fail_and_fill.len], &fail_and_fill);
     for (0..100_000) |_| m.step();
     try std.testing.expectEqual(State.halted, m.state);
     try std.testing.expectEqual(0x108, m.pc);
+    return m;
+}
+
+test "the milestone 2 self-test program paints the screen in its pass color" {
+    const m = try runSelfTest(&self_test);
     for (m.memory[screen_start..]) |pixel| try std.testing.expectEqual(pass_color, pixel);
+}
+
+test "the milestone 2 self-test program paints its fail color when a check fails" {
+    var broken = self_test;
+    broken[9] = 0x5B;
+    const m = try runSelfTest(&broken);
+    for (m.memory[screen_start..]) |pixel| try std.testing.expectEqual(fail_color, pixel);
+}
+
+test "aliasing: LD a, [h:h], ST a, [h:h] and ST a, [a:a]" {
+    var m = load(&.{ 0x52, 0x10, 0x22, 0x53, 0x30, 0x22, 0x53, 0x40, 0x44, 0x00 });
+    m.r[2] = 0x12;
+    m.r[3] = 0xC4;
+    m.r[4] = 0x05;
+    m.memory[0x1212] = 0x99;
+    m.step();
+    try std.testing.expectEqual(0x99, m.r[1]);
+    try run(&m);
+    try std.testing.expectEqual(0xC4, m.memory[0x1212]);
+    try std.testing.expectEqual(0x05, m.memory[0x0505]);
+}
+
+test "CALL at the top of memory reads its operands and pushes a return address that wrapped" {
+    var m = load(&.{0x02});
+    m.memory[0x7FFE] = 0x70;
+    m.memory[0x7FFF] = 0x01;
+    m.pc = 0x7FFE;
+    m.step();
+    try std.testing.expectEqual(0x0201, m.pc);
+    try std.testing.expectEqual(0x00, m.memory[0x3EFF]);
+    try std.testing.expectEqual(0x01, m.memory[0x3EFE]);
+}
+
+test "LD with an address at the top of memory reads its high byte from 0x0000" {
+    var m = load(&.{ 0x12, 0x00 });
+    @memcpy(m.memory[0x7FFD..], &[_]u8{ 0x50, 0x10, 0x34 });
+    m.memory[0x1234] = 0x77;
+    m.pc = 0x7FFD;
+    m.step();
+    try std.testing.expectEqual(0x77, m.r[1]);
+    try std.testing.expectEqual(1, m.pc);
 }
