@@ -11,14 +11,15 @@ export fn memory_ptr() u32 {
 }
 
 export fn reset(seed: u32) void {
-    _ = seed; // For the random generator, which arrives in milestone 5.
-    machine.reset();
+    machine.reset(seed);
 }
 
 export fn step(n: u32) u32 {
+    machine.frame_ended = false;
     for (0..n) |_| {
         if (machine.state != .running) break;
         machine.step();
+        if (machine.frame_ended) break;
     }
     return state();
 }
@@ -60,6 +61,27 @@ test "step stops early and returns the state when the machine halts or faults" {
     try std.testing.expectEqual(2, step(100));
     try std.testing.expectEqual(3, machine.pc);
     try std.testing.expectEqual(2, step(100));
+}
+
+test "step stops after the ST that ends the frame and goes on from there next time" {
+    load(&.{ 0x51, 0x00, 0x03, 0x3F, 0x10, 0x10, 0x01, 0x51, 0x00, 0x03, 0x3F, 0x10, 0x20, 0x02, 0x00 });
+    try std.testing.expectEqual(0, step(100));
+    try std.testing.expectEqual(4, machine.pc);
+    try std.testing.expectEqual(0, step(100));
+    try std.testing.expectEqual(11, machine.pc);
+    try std.testing.expectEqual(1, machine.r[1]);
+    try std.testing.expectEqual(1, step(100));
+    try std.testing.expectEqual(2, machine.r[2]);
+}
+
+test "reset seeds the random generator" {
+    load(&.{ 0x50, 0x10, 0x02, 0x3F, 0x00 });
+    _ = step(10);
+    try std.testing.expectEqual(0x53, machine.r[1]);
+    reset(1);
+    @memcpy(machine.memory[0..5], &[_]u8{ 0x50, 0x10, 0x02, 0x3F, 0x00 });
+    _ = step(10);
+    try std.testing.expectEqual(0xCF, machine.r[1]);
 }
 
 test "the built wasm module imports nothing and exports its memory" {

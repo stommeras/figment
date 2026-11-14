@@ -26,14 +26,14 @@ All arithmetic wraps. An 8-bit result keeps its low 8 bits, and `PC` and `SP` wr
 | Range | Use |
 | --- | --- |
 | `0x0000` to `0x3EFF` | Program and RAM. The program is loaded at `0x0000` |
-| `0x3F00` to `0x3FFF` | I/O page for keys, the beeper and random (milestone 5) |
+| `0x3F00` to `0x3FFF` | I/O page for keys, the beeper, random and frames (milestone 5) |
 | `0x4000` to `0x7FFF` | Screen (milestone 4) |
 
-The machine doesn't protect any range. A program can execute, read and write every address. Until milestone 5 gives the I/O page its meaning, it behaves as plain memory.
+The machine doesn't protect any range. A program can execute, read and write every address.
 
 ## Reset
 
-Reset zeroes memory, all registers, `PC` and both flags, sets `SP` to `0x3F00`, and sets the state to running.
+Reset zeroes memory, all registers, `PC` and both flags, sets `SP` to `0x3F00`, seeds the random generator, and sets the state to running.
 
 ## Instruction format
 
@@ -162,9 +162,9 @@ A test program paints the screen green (`0x0B`) when it passes and red (`0x08`) 
 
 ### The page
 
-`zig build` installs the page to `zig-out/web`, together with `figment.wasm` and `self-test.bin`, which is `programs/self-test.asm` assembled. Any static file server can serve the folder. `zig build serve` builds and serves it with `python3 -m http.server`.
+`zig build` installs the page to `zig-out/web`, together with `figment.wasm`, `self-test.bin` and `demo.bin`, which are `programs/self-test.asm` and `programs/demo.asm` assembled. Any static file server can serve the folder. `zig build serve` builds and serves it with `python3 -m http.server`.
 
-The page loads `self-test.bin`, or a `.bin` file the user picks. It refuses a file larger than 32,768 bytes with a message and keeps running the program it has. It calls `reset` with a random seed, copies the program in, and then on every animation frame runs `step(100000)` and draws the screen to a canvas. It shows the state under the canvas. Milestone 5 replaces the fixed 100,000 with a measured speed.
+The page loads the file its `program` query parameter names, `self-test.bin` without one, or a `.bin` file the user picks. It refuses a file larger than 32,768 bytes with a message and keeps running the program it has. It calls `reset` with a random seed, copies the program in, and then runs frames as the timing part of milestone 5 describes, drawing the screen to a canvas. It shows the state under the canvas.
 
 ### The terminal renderer
 
@@ -174,9 +174,45 @@ It exits with 0 when the machine halted or is still running. When the machine fa
 
 ## Keys, beeper, random and timing (milestone 5)
 
-These are addresses in the I/O page. The program reads one address for the keys, writes one for the beeper, and reads one to get a random byte from xoshiro256++, seeded by the host at reset. Milestone 5 sets the addresses, the key layout, the beeper pitch and how a program waits for the next frame.
+The machine runs in frames, 60 a second. Before each frame the host writes the keys, then runs the machine until the program ends the frame or the frame's instructions run out, then draws the screen and sets the beeper.
 
-The host decides how fast the machine runs. Milestone 5 picks a default speed once a real program exists to measure.
+| Address | Name | Use |
+| --- | --- | --- |
+| `0x3F00` | `KEYS` | The host writes the keys here before each frame |
+| `0x3F01` | `BEEP` | The program writes a note here. The host plays it from the end of the frame |
+| `0x3F02` | `RAND` | `LD` from here gives the next random byte |
+| `0x3F03` | `FRAME` | `ST` to here ends the frame |
+
+The rest of the I/O page is plain memory. Only `LD` and `ST` give the I/O page its meaning. Every other access, such as fetching an instruction or `POP` with `SP` in the page, sees plain memory, and `LD` from `KEYS` or `BEEP` reads the byte that is there.
+
+### Keys
+
+`KEYS` holds one bit per key, 1 while the key is held. A program that writes `KEYS` keeps the value until the host writes the next frame's keys.
+
+| Bit | Key | Page key |
+| --- | --- | --- |
+| 0 | Up | Arrow up |
+| 1 | Down | Arrow down |
+| 2 | Left | Arrow left |
+| 3 | Right | Arrow right |
+| 4 | A | `Z` |
+| 5 | B | `X` |
+| 6 | Start | Enter |
+| 7 | Select | Shift |
+
+### Beeper
+
+The beeper plays a square wave. A note `n` from 1 to 127 has the frequency of MIDI note `n`, 440 × 2^((`n` − 69) / 12) Hz, so 69 is A4 and 60 is middle C. 0 and every value above 127 are silence. The beeper keeps playing a note until the program writes another one. Reset silences it, since it zeroes `BEEP`, and so does the machine halting or faulting. The page starts its sound on the first key or click, since browsers keep a page silent until then.
+
+### Random
+
+The random generator is xoshiro256++. Reset fills its four 64-bit state words, in order, with the first four outputs of SplitMix64 started at the seed. Each `LD` from `RAND` advances the generator once and gives the top 8 bits of its 64-bit output. With seed 0 the first bytes are `53 61 5C 02 7E 05 DB D8`. `ST` to `RAND` stores a plain byte, which only non-`LD` reads see.
+
+### Timing
+
+The machine runs at most 100,000 instructions a frame, which is enough to paint every pixel once with the five-instruction loop in `programs/self-test.asm` (81,920 instructions). A program that has finished its work for the frame writes any value to `FRAME`. The frame ends after that `ST`, and the machine goes on with the next instruction in the next frame. A program that never writes `FRAME` uses the whole frame. The page keeps 60 frames a second whatever the display's refresh rate, and runs at most 4 frames in one animation frame to catch up after the tab was hidden.
+
+`figment-run` ignores frame ends and runs on, with no keys held and the beeper silent.
 
 ## Host interface
 
@@ -185,8 +221,8 @@ The core is a `wasm32` module that imports nothing. It exports its `memory` and 
 | Export | Does |
 | --- | --- |
 | `memory_ptr() -> u32` | Returns the byte offset of the machine's 32,768 bytes inside the module's `memory`. The host writes the program at this offset and reads the screen at this offset plus `0x4000` |
-| `reset(seed)` | Resets the machine. The seed is for the random generator and is ignored until milestone 5 |
-| `step(n) -> u32` | Executes up to `n` instructions, stops early if the machine halts or faults, and returns the state |
+| `reset(seed)` | Resets the machine and seeds the random generator |
+| `step(n) -> u32` | Executes up to `n` instructions, stops early if the machine halts or faults or the program ends the frame, and returns the state. One call is one frame |
 | `state() -> u32` | Returns 0 for running, 1 for halted, 2 for faulted |
 | `palette_ptr() -> u32` | Returns the byte offset of the palette inside `memory`: 16 colors of 3 bytes each, red, green and blue, in index order |
 
