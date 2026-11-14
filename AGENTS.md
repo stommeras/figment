@@ -12,6 +12,7 @@ The version is pinned in three places that change together: this file, `.github/
 
 - `SPEC.md` is the source of truth for behavior. Change the spec in the same pull request as the code, and keep encodings, flags and wrapping rules out of other documents.
 - The core imports nothing from the host. `src/root.zig` is the machine and `src/wasm.zig` is the host interface. A test in `src/wasm.zig` reads the built module and fails if it has an import.
+- `src/asm.zig` is the assembler, a native program built as `figment-asm`. Programs written in assembly live in `programs/`.
 - Machine values use exact integer widths (`u15` addresses, `u4` register numbers) and wrapping operators (`+%`), so a value cannot go out of range and no bounds check is needed. The release module is `ReleaseSmall`, which has no safety checks to fall back on.
 - The web layer, when it arrives, is plain HTML and JavaScript in `web/` with no bundler. It passes keys in and copies the screen to a canvas.
 

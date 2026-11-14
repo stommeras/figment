@@ -6,14 +6,227 @@ pub const Diagnostic = struct { line: usize = 0, message: []const u8 = "" };
 pub const Error = error{ Syntax, OutOfMemory };
 
 pub fn assemble(gpa: std.mem.Allocator, source: []const u8, diagnostic: *Diagnostic) Error![]u8 {
-    _ = gpa;
-    _ = source;
-    _ = diagnostic;
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+    var labels: std.StringHashMapUnmanaged(u16) = .empty;
+    defer labels.deinit(gpa);
+    var fixups: std.ArrayList(Fixup) = .empty;
+    defer fixups.deinit(gpa);
+
+    var lines = std.mem.splitScalar(u8, source, '\n');
+    var line: usize = 0;
+    while (lines.next()) |raw| {
+        line += 1;
+        diagnostic.line = line;
+        var text = trim(raw[0 .. std.mem.findScalar(u8, raw, ';') orelse raw.len]);
+
+        const name_end = nameLength(text);
+        if (name_end > 0 and name_end < text.len and text[name_end] == ':') {
+            const name = text[0..name_end];
+            if (register(name) != null) return fail(diagnostic, "a register name cannot be a label");
+            const entry = try labels.getOrPut(gpa, name);
+            if (entry.found_existing) return fail(diagnostic, "label is already defined");
+            entry.value_ptr.* = @intCast(out.items.len);
+            text = trim(text[name_end + 1 ..]);
+        }
+        if (text.len == 0) continue;
+
+        const mnemonic_end = std.mem.findAny(u8, text, " \t") orelse text.len;
+        const mnemonic = text[0..mnemonic_end];
+        const rest = trim(text[mnemonic_end..]);
+
+        if (std.ascii.eqlIgnoreCase(mnemonic, ".byte")) {
+            var items = std.mem.splitScalar(u8, rest, ',');
+            while (items.next()) |item| {
+                const operand = try parseOperand(diagnostic, item);
+                if (operand != .value) return fail(diagnostic, "wrong operands for this instruction");
+                try out.append(gpa, try immediate(diagnostic, operand.value));
+            }
+        } else {
+            var operands: [3]Operand = undefined;
+            var count: usize = 0;
+            if (rest.len > 0) {
+                var items = std.mem.splitScalar(u8, rest, ',');
+                while (items.next()) |item| : (count += 1) {
+                    if (count == operands.len) return fail(diagnostic, "wrong operands for this instruction");
+                    operands[count] = try parseOperand(diagnostic, item);
+                }
+            }
+            const form = try findForm(diagnostic, mnemonic, operands[0..count]);
+            try encode(gpa, diagnostic, &out, &fixups, form, operands[0..count]);
+        }
+        if (out.items.len > memory_size) return fail(diagnostic, "the program does not fit in memory");
+    }
+
+    for (fixups.items) |fixup| {
+        diagnostic.line = fixup.line;
+        const value = labels.get(fixup.label) orelse return fail(diagnostic, "undefined label");
+        out.items[fixup.offset] = @truncate(value);
+        out.items[fixup.offset + 1] = @truncate(value >> 8);
+    }
+    return out.toOwnedSlice(gpa);
+}
+
+const memory_size = 0x8000;
+
+const Fixup = struct { offset: usize, label: []const u8, line: usize };
+
+const Value = union(enum) { number: u64, label: []const u8 };
+
+const Operand = union(enum) { register: u4, value: Value, memory: Value, pair: [2]u4 };
+
+const Param = enum { register, immediate, address, memory, pair };
+
+const Form = struct { mnemonic: []const u8, params: []const Param, opcode: u8 };
+
+const forms = forms: {
+    var list: []const Form = &.{
+        .{ .mnemonic = "HLT", .params = &.{}, .opcode = 0x00 },
+        .{ .mnemonic = "LDI", .params = &.{ .register, .immediate }, .opcode = 0x10 },
+        .{ .mnemonic = "MOV", .params = &.{ .register, .register }, .opcode = 0x11 },
+        .{ .mnemonic = "SHL", .params = &.{.register}, .opcode = 0x40 },
+        .{ .mnemonic = "SHR", .params = &.{.register}, .opcode = 0x41 },
+        .{ .mnemonic = "LD", .params = &.{ .register, .memory }, .opcode = 0x50 },
+        .{ .mnemonic = "ST", .params = &.{ .register, .memory }, .opcode = 0x51 },
+        .{ .mnemonic = "LD", .params = &.{ .register, .pair }, .opcode = 0x52 },
+        .{ .mnemonic = "ST", .params = &.{ .register, .pair }, .opcode = 0x53 },
+        .{ .mnemonic = "JMP", .params = &.{.address}, .opcode = 0x60 },
+        .{ .mnemonic = "JZ", .params = &.{.address}, .opcode = 0x61 },
+        .{ .mnemonic = "JNZ", .params = &.{.address}, .opcode = 0x62 },
+        .{ .mnemonic = "JC", .params = &.{.address}, .opcode = 0x63 },
+        .{ .mnemonic = "JNC", .params = &.{.address}, .opcode = 0x64 },
+        .{ .mnemonic = "CALL", .params = &.{.address}, .opcode = 0x70 },
+        .{ .mnemonic = "RET", .params = &.{}, .opcode = 0x71 },
+        .{ .mnemonic = "PUSH", .params = &.{.register}, .opcode = 0x72 },
+        .{ .mnemonic = "POP", .params = &.{.register}, .opcode = 0x73 },
+    };
+    for ([_][]const u8{ "ADD", "ADC", "SUB", "SBC", "CMP", "AND", "OR", "XOR" }, 0..) |mnemonic, i| {
+        list = list ++ &[_]Form{
+            .{ .mnemonic = mnemonic, .params = &.{ .register, .register }, .opcode = 0x20 + i },
+            .{ .mnemonic = mnemonic, .params = &.{ .register, .immediate }, .opcode = 0x30 + i },
+        };
+    }
+    break :forms list;
+};
+
+fn findForm(diagnostic: *Diagnostic, mnemonic: []const u8, operands: []const Operand) error{Syntax}!Form {
+    var known = false;
+    for (forms) |form| {
+        if (!std.ascii.eqlIgnoreCase(form.mnemonic, mnemonic)) continue;
+        known = true;
+        if (form.params.len != operands.len) continue;
+        for (form.params, operands) |param, operand| {
+            const fits = switch (param) {
+                .register => operand == .register,
+                .immediate, .address => operand == .value,
+                .memory => operand == .memory,
+                .pair => operand == .pair,
+            };
+            if (!fits) break;
+        } else return form;
+    }
+    return fail(diagnostic, if (known) "wrong operands for this instruction" else "unknown instruction");
+}
+
+fn encode(
+    gpa: std.mem.Allocator,
+    diagnostic: *Diagnostic,
+    out: *std.ArrayList(u8),
+    fixups: *std.ArrayList(Fixup),
+    form: Form,
+    operands: []const Operand,
+) Error!void {
+    try out.append(gpa, form.opcode);
+    if (operands.len > 0 and operands[0] == .register) {
+        const low: u4 = if (operands.len > 1 and operands[1] == .register) operands[1].register else 0;
+        try out.append(gpa, @as(u8, operands[0].register) << 4 | low);
+    }
+    for (form.params, operands) |param, operand| switch (param) {
+        .register => {},
+        .immediate => try out.append(gpa, try immediate(diagnostic, operand.value)),
+        .address, .memory => {
+            const value = if (param == .address) operand.value else operand.memory;
+            switch (value) {
+                .number => |number| {
+                    if (number > 0xFFFF) return fail(diagnostic, "an address is a number from 0 to 0xFFFF");
+                    try out.appendSlice(gpa, &.{ @truncate(number), @truncate(number >> 8) });
+                },
+                .label => |label| {
+                    try fixups.append(gpa, .{ .offset = out.items.len, .label = label, .line = diagnostic.line });
+                    try out.appendSlice(gpa, &.{ 0, 0 });
+                },
+            }
+        },
+        .pair => try out.append(gpa, @as(u8, operand.pair[0]) << 4 | operand.pair[1]),
+    };
+}
+
+fn immediate(diagnostic: *Diagnostic, value: Value) error{Syntax}!u8 {
+    return switch (value) {
+        .number => |number| std.math.cast(u8, number),
+        .label => null,
+    } orelse fail(diagnostic, "an immediate is a number from 0 to 255");
+}
+
+fn parseOperand(diagnostic: *Diagnostic, raw: []const u8) error{Syntax}!Operand {
+    const text = trim(raw);
+    if (text.len == 0) return fail(diagnostic, "missing operand");
+    if (register(text)) |r| return .{ .register = r };
+    if (text[0] != '[') return .{ .value = try parseValue(diagnostic, text) };
+    if (text.len < 2 or text[text.len - 1] != ']') return fail(diagnostic, "invalid operand");
+    const inner = trim(text[1 .. text.len - 1]);
+    const colon = std.mem.findScalar(u8, inner, ':') orelse return .{ .memory = try parseValue(diagnostic, inner) };
+    const h = register(trim(inner[0..colon])) orelse return fail(diagnostic, "invalid operand");
+    const l = register(trim(inner[colon + 1 ..])) orelse return fail(diagnostic, "invalid operand");
+    return .{ .pair = .{ h, l } };
+}
+
+fn parseValue(diagnostic: *Diagnostic, text: []const u8) error{Syntax}!Value {
+    if (text.len > 0 and nameLength(text) == text.len) return .{ .label = text };
+    if (text.len == 0 or !std.ascii.isDigit(text[0])) return fail(diagnostic, "invalid operand");
+    return .{ .number = std.fmt.parseInt(u64, text, 0) catch return fail(diagnostic, "invalid operand") };
+}
+
+fn register(text: []const u8) ?u4 {
+    if (text.len != 2 or std.ascii.toLower(text[0]) != 'r') return null;
+    return @intCast(std.fmt.charToDigit(text[1], 16) catch return null);
+}
+
+fn nameLength(text: []const u8) usize {
+    if (text.len == 0 or !(std.ascii.isAlphabetic(text[0]) or text[0] == '_')) return 0;
+    for (text, 0..) |c, i| {
+        if (!(std.ascii.isAlphanumeric(c) or c == '_')) return i;
+    }
+    return text.len;
+}
+
+fn trim(text: []const u8) []const u8 {
+    return std.mem.trim(u8, text, " \t\r");
+}
+
+fn fail(diagnostic: *Diagnostic, message: []const u8) error{Syntax} {
+    diagnostic.message = message;
     return error.Syntax;
 }
 
 pub fn main(init: std.process.Init) !void {
-    _ = init;
+    const arena = init.arena.allocator();
+    const args = try init.minimal.args.toSlice(arena);
+    if (args.len != 3) {
+        std.debug.print("usage: figment-asm <source> <output>\n", .{});
+        std.process.exit(2);
+    }
+    const cwd = std.Io.Dir.cwd();
+    const source = try cwd.readFileAlloc(init.io, args[1], arena, .limited(1 << 24));
+    var diagnostic: Diagnostic = .{};
+    const program = assemble(arena, source, &diagnostic) catch |err| switch (err) {
+        error.Syntax => {
+            std.debug.print("{s}:{d}: {s}\n", .{ args[1], diagnostic.line, diagnostic.message });
+            std.process.exit(1);
+        },
+        error.OutOfMemory => return err,
+    };
+    try cwd.writeFile(init.io, .{ .sub_path = args[2], .data = program });
 }
 
 const testing = std.testing;
@@ -124,10 +337,10 @@ test "a label is the address of the next byte, used before or after it is define
         \\        .byte 1, 2
         \\middle:
         \\        CALL middle
-        \\end:    JZ start ; end is 6
+        \\end:    JZ start ; end is 8
         \\        LD r1, [middle]
         \\_x_1:   ST r1, [_x_1]
-    , &.{ 0x60, 0x06, 0x00, 1, 2, 0x70, 0x05, 0x00, 0x61, 0x00, 0x00, 0x50, 0x10, 0x05, 0x00, 0x51, 0x10, 0x0F, 0x00 });
+    , &.{ 0x60, 0x08, 0x00, 1, 2, 0x70, 0x05, 0x00, 0x61, 0x00, 0x00, 0x50, 0x10, 0x05, 0x00, 0x51, 0x10, 0x0F, 0x00 });
 }
 
 test "labels are case-sensitive" {
