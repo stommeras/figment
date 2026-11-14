@@ -1,7 +1,8 @@
 ; A one-screen roguelike. Walk with the arrows, walk into monsters to hit them,
-; and take the stairs down. At 0 HP the run ends, and an arrow starts a new one.
+; pick up hearts, and take the stairs down. At 0 HP the run ends, and an arrow starts a new one.
 ;
-; The map is 16 by 15 tiles of 8 by 8 pixels, below a status line that shows the depth and HP.
+; The map is 16 by 15 tiles of 8 by 8 pixels, below a status line that shows the depth,
+; the HP the last monster hit has left, and the player's HP.
 ; It holds one byte per tile at MAP + y * 16 + x.
 
 KEYS = 0x3F00
@@ -28,7 +29,7 @@ MONSTER_HP = 0x3118
 
 MONSTERS = 4
 MAX_HP = 9
-MONSTER_MAX_HP = 2
+HEART_HP = 3
 
 MAP_TILES = 240
 FLOOR = 0                       ; the tiles, which are also their glyph numbers
@@ -37,7 +38,7 @@ STAIRS = 2
 PLAYER = 3                      ; the other glyphs
 DIGIT_0 = 4
 MONSTER = 14
-HEART = 15
+HEART = 15                      ; a tile as well
 
 UP = 0b0001
 DOWN = 0b0010
@@ -57,6 +58,7 @@ NOTE_STAIRS = 76
 NOTE_HIT = 60
 NOTE_HURT = 30
 NOTE_DEAD = 20
+NOTE_HEART = 84
 
 main:   LDI r0, 0
         ST r0, [DEPTH_TENS]
@@ -114,7 +116,19 @@ frame:  CALL tick_beep
         ST r8, [PLAYER_Y]
         CMP r0, STAIRS
         JZ .stairs
+        CMP r0, HEART
+        JZ .heart
         CALL draw_player
+        JMP .monsters
+.heart: LDI r0, FLOOR
+        CALL set_tile
+        LDI r1, HEART_HP
+        CALL heal
+        CALL draw_status
+        CALL draw_player
+        LDI r0, NOTE_HEART
+        LDI r1, 6
+        CALL beep
         JMP .monsters
 .attack:
         LDI r5, hi(MONSTER_HP)
@@ -123,10 +137,14 @@ frame:  CALL tick_beep
         LD r0, [r5:r6]
         SUB r0, 1
         ST r0, [r5:r6]
+        MOV r4, r0
+        CMP r4, 0
         JNZ .hit_monster
         CALL draw_cell
 .hit_monster:
         CALL draw_player
+        MOV r0, r4
+        CALL draw_monster_hp
         LDI r0, NOTE_HIT
         LDI r1, 3
         CALL beep
@@ -139,6 +157,7 @@ frame:  CALL tick_beep
         JMP .done
 .stairs:
         CALL descend
+        LDI r1, 1
         CALL heal
         LDI r0, NOTE_STAIRS
         LDI r1, 10
@@ -279,12 +298,14 @@ die:    LDI r0, 1
         LDI r1, 30
         JMP beep
 
+; Adds r1 to the player's HP, up to MAX_HP.
 heal:   LD r0, [PLAYER_HP]
+        ADD r0, r1
         CMP r0, MAX_HP
-        JZ .end
-        ADD r0, 1
-        ST r0, [PLAYER_HP]
-.end:   RET
+        JC .store
+        LDI r0, MAX_HP
+.store: ST r0, [PLAYER_HP]
+        RET
 
 ; Plays note r0 for r1 frames.
 beep:   ST r0, [BEEP]
@@ -302,7 +323,8 @@ tick_beep:
 .end:   RET
 
 ; Fills the map with wall, carves a cave by walking at random from the player's start,
-; puts the stairs where the walk ends, and draws everything in the next frame.
+; puts the stairs where the walk ends and a heart on a random floor tile,
+; and draws everything in the next frame.
 new_floor:
         LDI r5, hi(MAP)
         LDI r6, lo(MAP)
@@ -355,6 +377,7 @@ new_floor:
         JZ .walk
 .place: LDI r0, STAIRS
         CALL set_tile
+        CALL place_heart
         CALL place_monsters
         ST r0, [FRAME]          ; draw in the next frame, which the drawing fills
         CALL tick_beep
@@ -363,9 +386,42 @@ new_floor:
         CALL draw_map
         CALL draw_monsters
         CALL draw_player
+        CALL clear_monster_hp
         JMP draw_status
 
-; Uses r0, r4 to r8 and rC to rE.
+; Uses r0, r5 to r8 and rE.
+place_heart:
+        LDI rE, 0
+.try:   SUB rE, 1
+        JZ .end
+        CALL random_floor
+        JNZ .try
+        LD r0, [PLAYER_X]
+        CMP r0, r7
+        JNZ .put
+        LD r0, [PLAYER_Y]
+        CMP r0, r8
+        JZ .try
+.put:   LDI r0, HEART
+        JMP set_tile
+.end:   RET
+
+; r7, r8 = a random map tile. Sets Z when it is floor. Uses r0, r5 and r6.
+random_floor:
+        LD r7, [RAND]
+        AND r7, 15
+        LD r8, [RAND]
+        AND r8, 15
+        CMP r8, 15
+        JZ .wall
+        CALL tile_at
+        CMP r0, FLOOR
+        RET
+.wall:  CMP r8, 0               ; r8 is 15, so this clears Z
+        RET
+
+; Monsters get 2 HP on depths 1 to 4, 3 on depths 5 to 9 and 4 deeper.
+; Uses r0, r4 to r8 and rC to rF.
 place_monsters:
         LDI r5, hi(MONSTER_HP)
         LDI r6, lo(MONSTER_HP)
@@ -382,17 +438,19 @@ place_monsters:
         CMP rC, MONSTERS
         JC .count
 .all:   LDI rC, MONSTERS
-.count: LDI rE, 0
+.count: LDI rF, 4               ; rF = the HP of each monster
+        LD r0, [DEPTH_TENS]
+        CMP r0, 0
+        JNZ .hp
+        LDI rF, 2
+        LD r0, [DEPTH_ONES]
+        CMP r0, 5
+        JC .hp
+        LDI rF, 3
+.hp:    LDI rE, 0
 .try:   SUB rE, 1
         JZ .end
-        LD r7, [RAND]
-        AND r7, 15
-        LD r8, [RAND]
-        AND r8, 15
-        CMP r8, 15
-        JZ .try
-        CALL tile_at
-        CMP r0, FLOOR
+        CALL random_floor
         JNZ .try
         CALL monster_at
         CMP r4, MONSTERS
@@ -416,8 +474,7 @@ place_monsters:
         ST r8, [r5:r6]
         LDI r6, lo(MONSTER_HP)
         ADD r6, rD
-        LDI r0, MONSTER_MAX_HP
-        ST r0, [r5:r6]
+        ST rF, [r5:r6]
         ADD rD, 1
         CMP rD, rC
         JNZ .try
@@ -490,12 +547,16 @@ draw_cell:
         JZ .wall
         CMP r0, STAIRS
         JZ .stairs
+        CMP r0, HEART
+        JZ .heart
         LDI r1, SLATE
         JMP .draw
 .wall:  LDI r1, BROWN
         JMP .draw
 .stairs:
         LDI r1, YELLOW
+        JMP .draw
+.heart: LDI r1, RED
 .draw:  ADD r8, 1               ; the status line is screen row 0
         CALL draw_tile
         SUB r8, 1
@@ -526,6 +587,27 @@ draw_monster:
         ADD r8, 1
         LDI r0, MONSTER
         LDI r1, GREEN
+        JMP draw_tile
+
+; Draws a monster and HP r0 on the status line.
+draw_monster_hp:
+        LDI r7, 8
+        LDI r8, 0
+        LDI r1, WHITE
+        ADD r0, DIGIT_0
+        CALL draw_tile
+        LDI r7, 7
+        LDI r1, GREEN
+        LDI r0, MONSTER
+        JMP draw_tile
+
+clear_monster_hp:
+        LDI r8, 0
+        LDI r0, FLOOR
+        LDI r1, BLACK
+        LDI r7, 7
+        CALL draw_tile
+        LDI r7, 8
         JMP draw_tile
 
 draw_player:
