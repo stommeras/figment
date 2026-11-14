@@ -602,7 +602,17 @@ const rogue = struct {
     const monster_y = rogueConstant("MONSTER_Y");
     const monster_hp = rogueConstant("MONSTER_HP");
     const monsters = rogueConstant("MONSTERS");
+    const max_hp = rogueConstant("MAX_HP");
+    const wall = rogueConstant("WALL");
+    const stairs = rogueConstant("STAIRS");
+    const right = 0b1000;
+    const left = rogueConstant("LEFT");
+    const up = rogueConstant("UP");
 };
+
+fn tile(m: *figment.Machine, x: usize, y: usize) *u8 {
+    return &m.memory[rogue.map + y * 16 + x];
+}
 
 /// Loads rogue and runs the two frames that make and draw the first floor.
 fn startRogue(m: *figment.Machine, program: []const u8) !void {
@@ -634,7 +644,7 @@ fn removeMonsters(m: *figment.Machine) void {
 /// Replaces the cave with an open room and puts the player at 2, 7 with no monsters.
 fn openRoom(m: *figment.Machine) void {
     for (0..15) |y| for (0..16) |x| {
-        m.memory[rogue.map + y * 16 + x] = @intFromBool(x == 0 or x == 15 or y == 0 or y == 14);
+        tile(m, x, y).* = if (x == 0 or x == 15 or y == 0 or y == 14) rogue.wall else 0;
     };
     m.memory[rogue.player_x] = 2;
     m.memory[rogue.player_y] = 7;
@@ -658,13 +668,13 @@ test "rogue puts as many monsters on a floor as the depth, up to 4, away from th
             // Go down from the depth before, with the stairs to the player's right.
             removeMonsters(&m);
             m.memory[rogue.depth_ones] = depth - 1;
-            m.memory[rogue.player_hp] = 8;
+            m.memory[rogue.player_hp] = rogue.max_hp - 1;
             const x = m.memory[rogue.player_x];
             const y = m.memory[rogue.player_y];
-            m.memory[rogue.map + @as(usize, y) * 16 + x + 1] = 2;
-            try press(&m, 0b1000);
+            tile(&m, x + 1, y).* = rogue.stairs;
+            try press(&m, rogue.right);
             try testing.expectEqual(depth, m.memory[rogue.depth_ones]);
-            try testing.expectEqual(9, m.memory[rogue.player_hp]);
+            try testing.expectEqual(rogue.max_hp, m.memory[rogue.player_hp]);
         }
         try testing.expectEqual(@min(depth, 4), liveMonsters(&m));
         const px = m.memory[rogue.player_x];
@@ -673,16 +683,16 @@ test "rogue puts as many monsters on a floor as the depth, up to 4, away from th
             if (m.memory[rogue.monster_hp + n] == 0) continue;
             const x = m.memory[rogue.monster_x + n];
             const y = m.memory[rogue.monster_y + n];
-            try testing.expectEqual(0, m.memory[rogue.map + @as(usize, y) * 16 + x]);
+            try testing.expectEqual(0, tile(&m, x, y).*);
             try testing.expect(@max(px, x) - @min(px, x) > 2 or @max(py, y) - @min(py, y) > 2);
         }
     }
     // A full player stays at 9 on the way down.
     removeMonsters(&m);
     const x = m.memory[rogue.player_x];
-    m.memory[rogue.map + @as(usize, m.memory[rogue.player_y]) * 16 + x + 1] = 2;
-    try press(&m, 0b1000);
-    try testing.expectEqual(9, m.memory[rogue.player_hp]);
+    tile(&m, x + 1, m.memory[rogue.player_y]).* = rogue.stairs;
+    try press(&m, rogue.right);
+    try testing.expectEqual(rogue.max_hp, m.memory[rogue.player_hp]);
 }
 
 test "rogue keeps everyone off the walls and each other through deaths and new runs" {
@@ -707,18 +717,19 @@ test "rogue keeps everyone off the walls and each other through deaths and new r
         const x = m.memory[rogue.player_x];
         const y = m.memory[rogue.player_y];
         try testing.expect(x < 16 and y < 15);
-        try testing.expect(m.memory[rogue.map + @as(usize, y) * 16 + x] != 1);
-        try testing.expect(m.memory[rogue.player_hp] <= 9);
+        try testing.expect(tile(&m, x, y).* != rogue.wall);
+        try testing.expect(m.memory[rogue.player_hp] <= rogue.max_hp);
         const depth = @as(usize, m.memory[rogue.depth_tens]) * 10 + m.memory[rogue.depth_ones];
         deepest = @max(deepest, depth);
         for (0..rogue.monsters) |a| {
             const hp = m.memory[rogue.monster_hp + a];
-            if (depth == depth_before and hp_before[a] > 0 and hp == 0) kills += 1;
+            // A new floor or run also clears the monsters, but only a hit kills one.
+            if (dead_before == 0 and depth == depth_before and hp_before[a] > 0 and hp == 0) kills += 1;
             hp_before[a] = hp;
             if (hp == 0) continue;
             const ax = m.memory[rogue.monster_x + a];
             const ay = m.memory[rogue.monster_y + a];
-            try testing.expect(m.memory[rogue.map + @as(usize, ay) * 16 + ax] != 1);
+            try testing.expect(tile(&m, ax, ay).* != rogue.wall);
             try testing.expect(ax != x or ay != y);
             for (a + 1..rogue.monsters) |b| {
                 if (m.memory[rogue.monster_hp + b] == 0) continue;
@@ -740,19 +751,19 @@ test "rogue attacks a monster by walking into it and kills it in two hits" {
     try startRogue(&m, program);
     openRoom(&m);
     putMonster(&m, 0, 3, 7, 2);
-    try press(&m, 0b1000);
+    try press(&m, rogue.right);
     try testing.expectEqual(1, m.memory[rogue.monster_hp]);
     try testing.expectEqual(2, m.memory[rogue.player_x]);
     try testing.expectEqual(8, m.memory[rogue.player_hp]); // it hits back
-    try press(&m, 0b1000);
+    try press(&m, rogue.right);
     try testing.expectEqual(0, m.memory[rogue.monster_hp]);
     try testing.expectEqual(2, m.memory[rogue.player_x]);
     try testing.expectEqual(8, m.memory[rogue.player_hp]);
-    try press(&m, 0b1000);
+    try press(&m, rogue.right);
     try testing.expectEqual(3, m.memory[rogue.player_x]);
     // The same from the other side.
     putMonster(&m, 0, 2, 7, 2);
-    try press(&m, 0b0100);
+    try press(&m, rogue.left);
     try testing.expectEqual(1, m.memory[rogue.monster_hp]);
     try testing.expectEqual(7, m.memory[rogue.player_hp]);
 }
@@ -766,12 +777,12 @@ test "rogue monsters step toward the player and go around a wall" {
     openRoom(&m);
     putMonster(&m, 0, 8, 7, 2);
     putMonster(&m, 1, 8, 9, 2);
-    m.memory[rogue.map + 9 * 16 + 7] = 1;
-    try press(&m, 0b1000);
+    tile(&m, 7, 9).* = rogue.wall;
+    try press(&m, rogue.right);
     try testing.expectEqual(3, m.memory[rogue.player_x]);
     try testing.expectEqualSlices(u8, &.{ 7, 8 }, m.memory[rogue.monster_x..][0..2]);
     try testing.expectEqualSlices(u8, &.{ 7, 8 }, m.memory[rogue.monster_y..][0..2]);
-    try testing.expectEqual(9, m.memory[rogue.player_hp]);
+    try testing.expectEqual(rogue.max_hp, m.memory[rogue.player_hp]);
 }
 
 test "rogue monsters do not walk into each other" {
@@ -784,7 +795,7 @@ test "rogue monsters do not walk into each other" {
     // Monster 0 moves first and finds monster 1 in its way.
     putMonster(&m, 0, 9, 7, 2);
     putMonster(&m, 1, 8, 7, 2);
-    try press(&m, 0b1000);
+    try press(&m, rogue.right);
     try testing.expectEqualSlices(u8, &.{ 9, 7 }, m.memory[rogue.monster_x..][0..2]);
 }
 
@@ -798,18 +809,18 @@ test "rogue ends the run at 0 HP and starts over on the next arrow" {
     openRoom(&m);
     putMonster(&m, 0, 5, 7, 2);
     m.memory[rogue.player_hp] = 1;
-    try press(&m, 0b1000);
+    try press(&m, rogue.right);
     try testing.expectEqual(4, m.memory[rogue.monster_x]);
     try testing.expectEqual(1, m.memory[rogue.player_hp]);
-    try press(&m, 0b1000);
+    try press(&m, rogue.right);
     try testing.expectEqual(0, m.memory[rogue.player_hp]);
     try testing.expectEqual(1, m.memory[rogue.dead]);
     for (0..30) |_| _ = try runFrame(&m);
     try testing.expectEqual(3, m.memory[rogue.player_x]);
     try testing.expectEqual(5, m.memory[rogue.depth_ones]);
-    try press(&m, 0b0100);
+    try press(&m, rogue.left);
     try testing.expectEqual(0, m.memory[rogue.dead]);
-    try testing.expectEqual(9, m.memory[rogue.player_hp]);
+    try testing.expectEqual(rogue.max_hp, m.memory[rogue.player_hp]);
     try testing.expectEqual(1, m.memory[rogue.depth_ones]);
     try testing.expectEqual(1, liveMonsters(&m));
 }
@@ -829,8 +840,8 @@ test "rogue stops counting the depth at 99" {
         // Put the stairs to the player's right, step onto them, and let the new floor draw.
         const x = m.memory[rogue.player_x];
         const y = m.memory[rogue.player_y];
-        m.memory[rogue.map + @as(usize, y) * 16 + x + 1] = 2;
-        m.memory[figment.keys] = 0b1000;
+        tile(&m, x + 1, y).* = rogue.stairs;
+        m.memory[figment.keys] = rogue.right;
         _ = try runFrame(&m);
         m.memory[figment.keys] = 0;
         _ = try runFrame(&m);
