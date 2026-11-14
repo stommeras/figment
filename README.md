@@ -12,7 +12,7 @@ You need Zig 0.17.1.
 | --- | --- |
 | `zig build test` | Runs the tests |
 | `zig build` | Builds `figment-asm`, `figment-run` and the page in `zig-out/web` |
-| `python3 -m http.server -d zig-out/web` | Serves the page at http://localhost:8000 |
+| `zig build serve` | Builds, then serves the page at http://localhost:8000. Needs `python3` |
 | `zig-out/bin/figment-run program.bin` | Runs a program and prints the screen to the terminal |
 
 Figment follows [chip8](https://github.com/stommeras/chip8), a CHIP-8 emulator that was the practice run for this project.

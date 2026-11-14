@@ -75,6 +75,11 @@ pub fn build(b: *std.Build) void {
     b.getInstallStep().dependOn(&b.addInstallFileWithDir(wasm.getEmittedBin(), .{ .custom = "web" }, "figment.wasm").step);
     b.getInstallStep().dependOn(&b.addInstallFileWithDir(self_test_bin, .{ .custom = "web" }, "self-test.bin").step);
 
+    const serve = b.addSystemCommand(&.{ "python3", "-m", "http.server", "-d" });
+    serve.addDirectoryArg(.{ .relative = .{ .base = .install_prefix, .sub_path = "web" } });
+    serve.step.dependOn(b.getInstallStep());
+    b.step("serve", "Build, then serve the page at http://localhost:8000").dependOn(&serve.step);
+
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&b.addRunArtifact(core_tests).step);
     test_step.dependOn(&b.addRunArtifact(wasm_tests).step);

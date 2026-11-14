@@ -162,7 +162,7 @@ A test program paints the screen green (`0x0B`) when it passes and red (`0x08`) 
 
 ### The page
 
-`zig build` installs the page to `zig-out/web`, together with `figment.wasm` and `self-test.bin`, which is `programs/self-test.asm` assembled. Any static file server can serve the folder, for example `python3 -m http.server -d zig-out/web`.
+`zig build` installs the page to `zig-out/web`, together with `figment.wasm` and `self-test.bin`, which is `programs/self-test.asm` assembled. Any static file server can serve the folder. `zig build serve` builds and serves it with `python3 -m http.server`.
 
 The page loads `self-test.bin`, or a `.bin` file the user picks. It refuses a file larger than 32,768 bytes with a message and keeps running the program it has. It calls `reset` with a random seed, copies the program in, and then on every animation frame runs `step(100000)` and draws the screen to a canvas. It shows the state under the canvas. Milestone 5 replaces the fixed 100,000 with a measured speed.
 
