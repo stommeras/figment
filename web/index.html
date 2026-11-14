@@ -62,7 +62,6 @@
   .led[data-state="running"] { --led: var(--green); }
   .led[data-state="halted"] { --led: var(--yellow); }
   .led[data-state="faulted"], .led[data-state="error"] { --led: var(--red); }
-  /* Every button is as big as A and B, so Tangle's two players turn with buttons of the same size. */
   .controls {
     --button: min(44px, 12vw);
     display: grid;
@@ -77,18 +76,16 @@
     -webkit-touch-callout: none;
   }
   [data-key] { cursor: pointer; }
-  /* One cross with one shadow, under four invisible buttons. */
-  .dpad { display: grid; grid-template: repeat(3, var(--button)) / repeat(3, var(--button)); filter: drop-shadow(0 3px 0 var(--black)); }
-  /* Both bars share one cross-sized shade, so a held direction shades the whole cross from that side, as if it tipped down. */
+  .dpad { --cross: calc(3 * var(--button)); display: grid; grid-template: repeat(3, var(--button)) / repeat(3, var(--button)); filter: drop-shadow(0 3px 0 var(--black)); }
   .dpad::before, .dpad::after {
     content: "";
-    background: var(--shade, none) center / calc(3 * var(--button)) calc(3 * var(--button)) no-repeat, var(--bezel);
+    background: var(--cross-tilt, none) center / var(--cross) var(--cross) no-repeat, var(--bezel);
     border-radius: 6px;
   }
-  .dpad:has(.up[data-held]) { --shade: linear-gradient(to bottom, rgb(0 0 0 / 40%), transparent 50%, rgb(255 255 255 / 6%)); }
-  .dpad:has(.down[data-held]) { --shade: linear-gradient(to top, rgb(0 0 0 / 40%), transparent 50%, rgb(255 255 255 / 6%)); }
-  .dpad:has(.left[data-held]) { --shade: linear-gradient(to right, rgb(0 0 0 / 40%), transparent 50%, rgb(255 255 255 / 6%)); }
-  .dpad:has(.right[data-held]) { --shade: linear-gradient(to left, rgb(0 0 0 / 40%), transparent 50%, rgb(255 255 255 / 6%)); }
+  .dpad:has(.up[data-held]) { --cross-tilt: linear-gradient(to bottom, rgb(0 0 0 / 40%), transparent 50%, rgb(255 255 255 / 6%)); }
+  .dpad:has(.down[data-held]) { --cross-tilt: linear-gradient(to top, rgb(0 0 0 / 40%), transparent 50%, rgb(255 255 255 / 6%)); }
+  .dpad:has(.left[data-held]) { --cross-tilt: linear-gradient(to right, rgb(0 0 0 / 40%), transparent 50%, rgb(255 255 255 / 6%)); }
+  .dpad:has(.right[data-held]) { --cross-tilt: linear-gradient(to left, rgb(0 0 0 / 40%), transparent 50%, rgb(255 255 255 / 6%)); }
   .dpad::before { grid-area: 1 / 2 / 4 / 3; }
   .dpad::after { grid-area: 2 / 1 / 3 / 4; }
   .dpad span { z-index: 1; display: grid; place-content: center; border-radius: 6px; }
@@ -271,7 +268,6 @@ addEventListener("blur", () => {
 });
 addEventListener("pointerdown", startAudio);
 
-// The console's buttons, held by mouse or by any number of fingers at once.
 const buttons = [...document.querySelectorAll("[data-key]")];
 const pointerKeys = new Map();
 for (const button of buttons) {
