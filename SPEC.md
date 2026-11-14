@@ -262,3 +262,20 @@ This program adds 2 and 3.
 ```
 
 Afterwards `r1` is 5, `r2` is 3, `Z` and `C` are 0, the state is halted and `PC` is 8.
+
+## Possible upgrades
+
+None of these is designed or built. They are listed here so that a new game can pick the ones it needs, and each one becomes a milestone with its own encodings when it is chosen. They are ordered from cheapest to most expensive.
+
+The limit that binds first is time, not memory. Repainting the whole screen with the loop in `programs/self-test.asm` takes 81,920 of a frame's 100,000 instructions, while `programs/rogue.asm` assembles to about 1.8 KB of the 16 KB program area.
+
+| Upgrade | Work | Existing programs |
+| --- | --- | --- |
+| More instructions per frame, such as 1,000,000 | The constant in the core and the page, and the timing part of this file | Keep working |
+| New instructions, such as `MUL`, `INC` and `DEC` on a register pair, a load with an offset, and rotates | A few lines in the core and a row in the assembler each, plus the aliasing tests. About 150 opcodes are unused | Keep working |
+| The high 4 bits of a pixel byte, for 256 colors or a palette the program sets through the I/O page | The palette in the core, which the host already reads through `palette_ptr` | Keep working if indexes 0 to 15 keep their colors |
+| 64 KB of memory, with RAM at `0x8000` to `0xFFFF` | 16-bit addresses in the core, the 32,768-byte checks in the page, `figment-run` and the assembler, and the wrap tests | Keep working, unless one relies on `0x8000` meaning `0x0000` |
+| Hardware tiles or sprites, which the core draws into the screen before each frame | A new part of this file, the drawing code in the core, and test programs | Keep working if an I/O register turns them on |
+| More sound, such as 2 or 3 square channels and noise | Audio code in the page and a few I/O addresses | Keep working |
+| More than 64 KB, through a bank register in the I/O page | Banking in the core and the assembler | Keep working |
+| A bigger screen, such as 256 by 256 | Packed 4-bit pixels or banking, because one byte per pixel would fill the whole 64 KB | Every drawing routine changes |
