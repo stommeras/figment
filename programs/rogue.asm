@@ -1,6 +1,7 @@
-; A one-screen roguelike. Walk with the arrows and take the stairs down.
+; A one-screen roguelike. Walk with the arrows, walk into monsters to hit them,
+; and take the stairs down. At 0 HP the run ends, and an arrow starts a new one.
 ;
-; The map is 16 by 15 tiles of 8 by 8 pixels, below a status line that shows the depth.
+; The map is 16 by 15 tiles of 8 by 8 pixels, below a status line that shows the depth and HP.
 ; It holds one byte per tile at MAP + y * 16 + x.
 
 KEYS = 0x3F00
@@ -18,6 +19,16 @@ DEPTH_ONES = 0x3103
 KEYS_BEFORE = 0x3104            ; the keys held last frame
 KEYS_DRAWING = 0x3105           ; the keys held while a new floor was drawn
 BEEP_FRAMES = 0x3106            ; the frames left on the current beep
+PLAYER_HP = 0x3107
+DEAD = 0x3108
+TURN = 0x3109                   ; flips each turn, and the monsters act when it becomes 1
+MONSTER_X = 0x3110
+MONSTER_Y = 0x3114
+MONSTER_HP = 0x3118
+
+MONSTERS = 4
+MAX_HP = 9
+MONSTER_MAX_HP = 2
 
 MAP_TILES = 240
 FLOOR = 0                       ; the tiles, which are also their glyph numbers
@@ -25,6 +36,8 @@ WALL = 1
 STAIRS = 2
 PLAYER = 3                      ; the other glyphs
 DIGIT_0 = 4
+MONSTER = 14
+HEART = 15
 
 UP = 0b0001
 DOWN = 0b0010
@@ -35,13 +48,23 @@ BLACK = 0x0
 BROWN = 0x4
 SLATE = 0x5
 WHITE = 0x7
+RED = 0x8
+GREEN = 0xB
 YELLOW = 0xA
 
 NOTE_BUMP = 36
 NOTE_STAIRS = 76
+NOTE_HIT = 60
+NOTE_HURT = 30
+NOTE_DEAD = 20
 
-main:   LDI r0, 1
+main:   LDI r0, 0
+        ST r0, [DEPTH_TENS]
+        ST r0, [DEAD]
+        LDI r0, 1
         ST r0, [DEPTH_ONES]
+        LDI r0, MAX_HP
+        ST r0, [PLAYER_HP]
         CALL new_floor
 
 frame:  CALL tick_beep
@@ -56,6 +79,9 @@ frame:  CALL tick_beep
         AND rC, r1
         AND rC, ARROWS
         JZ .done
+        LD r0, [DEAD]
+        CMP r0, 0
+        JNZ main
         LD r7, [PLAYER_X]
         LD r8, [PLAYER_Y]
         CALL draw_cell          ; erase the player, who is drawn again below
@@ -78,7 +104,10 @@ frame:  CALL tick_beep
 .right: ADD r7, 1
 
 ; The border is all wall, so a step never leaves the map.
-.try:   CALL tile_at
+.try:   CALL monster_at
+        CMP r4, MONSTERS
+        JNZ .attack
+        CALL tile_at
         CMP r0, WALL
         JZ .bump
         ST r7, [PLAYER_X]
@@ -86,9 +115,31 @@ frame:  CALL tick_beep
         CMP r0, STAIRS
         JZ .stairs
         CALL draw_player
+        JMP .monsters
+.attack:
+        LDI r5, hi(MONSTER_HP)
+        LDI r6, lo(MONSTER_HP)
+        ADD r6, r4
+        LD r0, [r5:r6]
+        SUB r0, 1
+        ST r0, [r5:r6]
+        JNZ .hit_monster
+        CALL draw_cell
+.hit_monster:
+        CALL draw_player
+        LDI r0, NOTE_HIT
+        LDI r1, 3
+        CALL beep
+.monsters:
+        LD r0, [TURN]
+        XOR r0, 1
+        ST r0, [TURN]
+        JZ .done
+        CALL run_monsters
         JMP .done
 .stairs:
         CALL descend
+        CALL heal
         LDI r0, NOTE_STAIRS
         LDI r1, 10
         CALL beep
@@ -116,6 +167,123 @@ descend:
         RET
 .ones:  ADD r0, 1
         ST r0, [DEPTH_ONES]
+.end:   RET
+
+; Stops when the player dies. Uses r0 to rF except rC.
+run_monsters:
+        LDI rD, 0
+.next:  LDI r5, hi(MONSTER_HP)
+        LDI r6, lo(MONSTER_HP)
+        ADD r6, rD
+        LD r0, [r5:r6]
+        CMP r0, 0
+        JZ .skip
+        CALL monster_turn
+        LD r0, [DEAD]
+        CMP r0, 0
+        JNZ .end
+.skip:  ADD rD, 1
+        CMP rD, MONSTERS
+        JNZ .next
+.end:   RET
+
+; The turn of monster rD. Keeps rC and rD.
+monster_turn:
+        LDI r5, hi(MONSTER_X)
+        LDI r6, lo(MONSTER_X)
+        ADD r6, rD
+        LD r7, [r5:r6]
+        LDI r6, lo(MONSTER_Y)
+        ADD r6, rD
+        LD r8, [r5:r6]
+        LD rE, [PLAYER_X]       ; rE, rF = the player's position minus the monster's
+        SUB rE, r7
+        LD rF, [PLAYER_Y]
+        SUB rF, r8
+        MOV r0, rF
+        CMP rE, 0
+        JZ .in_line
+        CMP rF, 0
+        JNZ .step
+        MOV r0, rE
+.in_line:
+        CMP r0, 1
+        JZ .hit_player
+        CMP r0, 0xFF
+        JZ .hit_player
+.step:  MOV r1, r7
+        MOV r2, r8
+        CMP rE, 0
+        JZ .try_y
+        AND rE, 0x80
+        JZ .right
+        SUB r7, 1
+        JMP .try_x
+.right: ADD r7, 1
+.try_x: CALL can_step
+        JZ .move
+        MOV r7, r1
+.try_y: CMP rF, 0
+        JZ .end
+        AND rF, 0x80
+        JZ .down
+        SUB r8, 1
+        JMP .try_y2
+.down:  ADD r8, 1
+.try_y2:
+        CALL can_step
+        JNZ .end
+.move:  MOV rE, r7              ; rE, rF now hold the new position
+        MOV rF, r8
+        MOV r7, r1
+        MOV r8, r2
+        CALL draw_cell
+        MOV r7, rE
+        MOV r8, rF
+        LDI r5, hi(MONSTER_X)
+        LDI r6, lo(MONSTER_X)
+        ADD r6, rD
+        ST r7, [r5:r6]
+        LDI r6, lo(MONSTER_Y)
+        ADD r6, rD
+        ST r8, [r5:r6]
+        JMP draw_monster
+.hit_player:
+        LD r0, [PLAYER_HP]
+        SUB r0, 1
+        ST r0, [PLAYER_HP]
+        JZ die
+        LDI r0, NOTE_HURT
+        LDI r1, 6
+        CALL beep
+        JMP draw_status
+.end:   RET
+
+; Sets Z when r7, r8 has no wall and no live monster. Uses r0 and r4 to r6.
+can_step:
+        CALL tile_at
+        CMP r0, WALL
+        JZ .wall
+        CALL monster_at
+        CMP r4, MONSTERS
+        RET
+.wall:  CMP r0, 0               ; r0 is WALL, not 0, so this clears Z
+        RET
+
+die:    LDI r0, 1
+        ST r0, [DEAD]
+        CALL draw_status
+        LDI r1, RED
+        CALL draw_player_in
+        LDI r0, NOTE_DEAD
+        LDI r1, 30
+        JMP beep
+
+heal:   LD r0, [PLAYER_HP]
+        CMP r0, MAX_HP
+        JZ .end
+        ADD r0, 1
+        ST r0, [PLAYER_HP]
 .end:   RET
 
 ; Plays note r0 for r1 frames.
@@ -187,13 +355,98 @@ new_floor:
         JZ .walk
 .place: LDI r0, STAIRS
         CALL set_tile
+        CALL place_monsters
         ST r0, [FRAME]          ; draw in the next frame, which the drawing fills
         CALL tick_beep
         LD r0, [KEYS]           ; the main loop reads this frame's keys next frame
         ST r0, [KEYS_DRAWING]
         CALL draw_map
+        CALL draw_monsters
         CALL draw_player
         JMP draw_status
+
+; Uses r0, r4 to r8 and rC to rE.
+place_monsters:
+        LDI r5, hi(MONSTER_HP)
+        LDI r6, lo(MONSTER_HP)
+        LDI r0, 0
+        LDI rD, MONSTERS
+.clear: ST r0, [r5:r6]
+        ADD r6, 1
+        SUB rD, 1
+        JNZ .clear
+        LD rC, [DEPTH_ONES]     ; rC = the number of monsters
+        LD r0, [DEPTH_TENS]
+        CMP r0, 0
+        JNZ .all
+        CMP rC, MONSTERS
+        JC .count
+.all:   LDI rC, MONSTERS
+.count: LDI rE, 0
+.try:   SUB rE, 1
+        JZ .end
+        LD r7, [RAND]
+        AND r7, 15
+        LD r8, [RAND]
+        AND r8, 15
+        CMP r8, 15
+        JZ .try
+        CALL tile_at
+        CMP r0, FLOOR
+        JNZ .try
+        CALL monster_at
+        CMP r4, MONSTERS
+        JNZ .try
+        LD r0, [PLAYER_X]
+        SUB r0, r7
+        ADD r0, 2
+        CMP r0, 5
+        JNC .far
+        LD r0, [PLAYER_Y]
+        SUB r0, r8
+        ADD r0, 2
+        CMP r0, 5
+        JC .try
+.far:   LDI r5, hi(MONSTER_X)
+        LDI r6, lo(MONSTER_X)
+        ADD r6, rD
+        ST r7, [r5:r6]
+        LDI r6, lo(MONSTER_Y)
+        ADD r6, rD
+        ST r8, [r5:r6]
+        LDI r6, lo(MONSTER_HP)
+        ADD r6, rD
+        LDI r0, MONSTER_MAX_HP
+        ST r0, [r5:r6]
+        ADD rD, 1
+        CMP rD, rC
+        JNZ .try
+.end:   RET
+
+; r4 = the number of the live monster at r7, r8, or MONSTERS if there is none.
+; Uses r0, r5 and r6.
+monster_at:
+        LDI r4, 0
+        LDI r5, hi(MONSTER_X)
+.next:  LDI r6, lo(MONSTER_HP)
+        ADD r6, r4
+        LD r0, [r5:r6]
+        CMP r0, 0
+        JZ .skip
+        LDI r6, lo(MONSTER_X)
+        ADD r6, r4
+        LD r0, [r5:r6]
+        CMP r0, r7
+        JNZ .skip
+        LDI r6, lo(MONSTER_Y)
+        ADD r6, r4
+        LD r0, [r5:r6]
+        CMP r0, r8
+        JZ .end
+.skip:  ADD r4, 1
+        CMP r4, MONSTERS
+        JNZ .next
+.end:   RET
 
 ; r0 = the tile at r7, r8. Uses r5 and r6.
 tile_at:
@@ -248,12 +501,42 @@ draw_cell:
         SUB r8, 1
         RET
 
+draw_monsters:
+        LDI rD, 0
+.next:  LDI r5, hi(MONSTER_HP)
+        LDI r6, lo(MONSTER_HP)
+        ADD r6, rD
+        LD r0, [r5:r6]
+        CMP r0, 0
+        JZ .skip
+        LDI r6, lo(MONSTER_X)
+        ADD r6, rD
+        LD r7, [r5:r6]
+        LDI r6, lo(MONSTER_Y)
+        ADD r6, rD
+        LD r8, [r5:r6]
+        CALL draw_monster
+.skip:  ADD rD, 1
+        CMP rD, MONSTERS
+        JNZ .next
+        RET
+
+; Draws a monster at map tile r7, r8, and leaves r8 one higher.
+draw_monster:
+        ADD r8, 1
+        LDI r0, MONSTER
+        LDI r1, GREEN
+        JMP draw_tile
+
 draw_player:
+        LDI r1, WHITE
+
+; Draws the player in color r1.
+draw_player_in:
         LD r7, [PLAYER_X]
         LD r8, [PLAYER_Y]
         ADD r8, 1
         LDI r0, PLAYER
-        LDI r1, WHITE
         JMP draw_tile
 
 draw_status:
@@ -269,6 +552,15 @@ draw_status:
         CALL draw_tile
         LDI r7, 2
         LD r0, [DEPTH_ONES]
+        ADD r0, DIGIT_0
+        CALL draw_tile
+        LDI r7, 14
+        LDI r0, HEART
+        LDI r1, RED
+        CALL draw_tile
+        LDI r7, 15
+        LDI r1, WHITE
+        LD r0, [PLAYER_HP]
         ADD r0, DIGIT_0
         JMP draw_tile
 
@@ -362,7 +654,7 @@ draw_tile:
         JNZ .row
         RET
 
-; 8 bytes a glyph, one bit per pixel, top row first, numbered as FLOOR to DIGIT_0 say.
+; 8 bytes a glyph, one bit per pixel, top row first, numbered as FLOOR to HEART say.
 glyphs: .byte 0x00, 0x00, 0x00, 0x18, 0x18, 0x00, 0x00, 0x00   ; floor
         .byte 0xFE, 0xFE, 0xFE, 0x00, 0xEF, 0xEF, 0xEF, 0x00   ; wall
         .byte 0x03, 0x03, 0x0F, 0x0F, 0x3F, 0x3F, 0xFF, 0xFF   ; stairs
@@ -377,3 +669,5 @@ glyphs: .byte 0x00, 0x00, 0x00, 0x18, 0x18, 0x00, 0x00, 0x00   ; floor
         .byte 0x7E, 0x06, 0x0C, 0x18, 0x30, 0x30, 0x30, 0x00
         .byte 0x3C, 0x66, 0x66, 0x3C, 0x66, 0x66, 0x3C, 0x00
         .byte 0x3C, 0x66, 0x66, 0x3E, 0x06, 0x66, 0x3C, 0x00
+        .byte 0x3C, 0x7E, 0xDB, 0xFF, 0xFF, 0x7E, 0x5A, 0x00   ; monster
+        .byte 0x6C, 0xFE, 0xFE, 0xFE, 0x7C, 0x38, 0x10, 0x00   ; heart

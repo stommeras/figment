@@ -596,9 +596,112 @@ const rogue = struct {
     const player_y = rogueConstant("PLAYER_Y");
     const depth_tens = rogueConstant("DEPTH_TENS");
     const depth_ones = rogueConstant("DEPTH_ONES");
+    const player_hp = rogueConstant("PLAYER_HP");
+    const dead = rogueConstant("DEAD");
+    const monster_x = rogueConstant("MONSTER_X");
+    const monster_y = rogueConstant("MONSTER_Y");
+    const monster_hp = rogueConstant("MONSTER_HP");
+    const monsters = rogueConstant("MONSTERS");
+    const turn = rogueConstant("TURN");
+    const max_hp = rogueConstant("MAX_HP");
+    const wall = rogueConstant("WALL");
+    const stairs = rogueConstant("STAIRS");
+    const right = 0b1000;
+    const left = rogueConstant("LEFT");
+    const up = rogueConstant("UP");
 };
 
-test "rogue keeps the player off the walls and goes down stairs" {
+fn tile(m: *figment.Machine, x: usize, y: usize) *u8 {
+    return &m.memory[rogue.map + y * 16 + x];
+}
+
+fn startRogue(m: *figment.Machine, program: []const u8) !void {
+    m.reset(0);
+    @memcpy(m.memory[0..program.len], program);
+    _ = try runFrame(m);
+    _ = try runFrame(m);
+}
+
+fn press(m: *figment.Machine, keys: u8) !void {
+    m.memory[figment.keys] = keys;
+    _ = try runFrame(m);
+    m.memory[figment.keys] = 0;
+    _ = try runFrame(m);
+    _ = try runFrame(m);
+}
+
+fn liveMonsters(m: *const figment.Machine) usize {
+    var n: usize = 0;
+    for (m.memory[rogue.monster_hp..][0..rogue.monsters]) |hp| n += @intFromBool(hp > 0);
+    return n;
+}
+
+fn removeMonsters(m: *figment.Machine) void {
+    @memset(m.memory[rogue.monster_hp..][0..rogue.monsters], 0);
+}
+
+fn openRoom(m: *figment.Machine) void {
+    for (0..15) |y| for (0..16) |x| {
+        tile(m, x, y).* = if (x == 0 or x == 15 or y == 0 or y == 14) rogue.wall else 0;
+    };
+    m.memory[rogue.player_x] = 2;
+    m.memory[rogue.player_y] = 7;
+    m.memory[rogue.turn] = 0;
+    removeMonsters(m);
+}
+
+fn putMonster(m: *figment.Machine, i: usize, x: u8, y: u8, hp: u8) void {
+    m.memory[rogue.monster_x + i] = x;
+    m.memory[rogue.monster_y + i] = y;
+    m.memory[rogue.monster_hp + i] = hp;
+}
+
+test "rogue lays out the monster tables and HP the way its code assumes" {
+    // The code steps between tables by changing only the low address byte.
+    try testing.expectEqual(rogue.monster_x + rogue.monsters, rogue.monster_y);
+    try testing.expectEqual(rogue.monster_y + rogue.monsters, rogue.monster_hp);
+    try testing.expectEqual(rogue.monster_x >> 8, (rogue.monster_hp + rogue.monsters - 1) >> 8);
+    // The status line shows HP as one digit.
+    try testing.expect(rogue.max_hp <= 9);
+}
+
+test "rogue puts as many monsters on a floor as the depth, up to 4, away from the player" {
+    var diagnostic: Diagnostic = .{};
+    const program = try assemble(testing.allocator, rogue_source, &diagnostic);
+    defer testing.allocator.free(program);
+    var m: figment.Machine = undefined;
+    try startRogue(&m, program);
+    for ([_]u8{ 1, 3, 9 }, 0..) |depth, i| {
+        if (i > 0) {
+            removeMonsters(&m);
+            m.memory[rogue.depth_ones] = depth - 1;
+            m.memory[rogue.player_hp] = rogue.max_hp - 1;
+            const x = m.memory[rogue.player_x];
+            const y = m.memory[rogue.player_y];
+            tile(&m, x + 1, y).* = rogue.stairs;
+            try press(&m, rogue.right);
+            try testing.expectEqual(depth, m.memory[rogue.depth_ones]);
+            try testing.expectEqual(rogue.max_hp, m.memory[rogue.player_hp]);
+        }
+        try testing.expectEqual(@min(depth, 4), liveMonsters(&m));
+        const px = m.memory[rogue.player_x];
+        const py = m.memory[rogue.player_y];
+        for (0..rogue.monsters) |n| {
+            if (m.memory[rogue.monster_hp + n] == 0) continue;
+            const x = m.memory[rogue.monster_x + n];
+            const y = m.memory[rogue.monster_y + n];
+            try testing.expectEqual(0, tile(&m, x, y).*);
+            try testing.expect(@max(px, x) - @min(px, x) > 2 or @max(py, y) - @min(py, y) > 2);
+        }
+    }
+    removeMonsters(&m);
+    const x = m.memory[rogue.player_x];
+    tile(&m, x + 1, m.memory[rogue.player_y]).* = rogue.stairs;
+    try press(&m, rogue.right);
+    try testing.expectEqual(rogue.max_hp, m.memory[rogue.player_hp]);
+}
+
+test "rogue keeps everyone off the walls and each other through deaths and new runs" {
     var diagnostic: Diagnostic = .{};
     const program = try assemble(testing.allocator, rogue_source, &diagnostic);
     defer testing.allocator.free(program);
@@ -606,16 +709,142 @@ test "rogue keeps the player off the walls and goes down stairs" {
     m.reset(0);
     @memcpy(m.memory[0..program.len], program);
     var r: std.Random.DefaultPrng = .init(1);
+    var deaths: usize = 0;
+    var kills: usize = 0;
+    var deepest: usize = 0;
+    var hp_before: [rogue.monsters]u8 = @splat(0);
+    var depth_before: usize = 1;
     for (0..20_000) |i| {
         // A random arrow on every other frame, so each one is a fresh press.
         m.memory[figment.keys] = if (i % 2 == 0) @as(u8, 1) << r.random().int(u2) else 0;
+        const dead_before = m.memory[rogue.dead];
         _ = try runFrame(&m);
+        deaths += @intFromBool(dead_before == 0 and m.memory[rogue.dead] == 1);
         const x = m.memory[rogue.player_x];
         const y = m.memory[rogue.player_y];
         try testing.expect(x < 16 and y < 15);
-        try testing.expect(m.memory[rogue.map + @as(usize, y) * 16 + x] != 1);
+        try testing.expect(tile(&m, x, y).* != rogue.wall);
+        try testing.expect(m.memory[rogue.player_hp] <= rogue.max_hp);
+        const depth = @as(usize, m.memory[rogue.depth_tens]) * 10 + m.memory[rogue.depth_ones];
+        deepest = @max(deepest, depth);
+        for (0..rogue.monsters) |a| {
+            const hp = m.memory[rogue.monster_hp + a];
+            if (dead_before == 0 and depth == depth_before and hp_before[a] > 0 and hp == 0) kills += 1;
+            hp_before[a] = hp;
+            if (hp == 0) continue;
+            const ax = m.memory[rogue.monster_x + a];
+            const ay = m.memory[rogue.monster_y + a];
+            try testing.expect(tile(&m, ax, ay).* != rogue.wall);
+            try testing.expect(ax != x or ay != y);
+            for (a + 1..rogue.monsters) |b| {
+                if (m.memory[rogue.monster_hp + b] == 0) continue;
+                try testing.expect(ax != m.memory[rogue.monster_x + b] or ay != m.memory[rogue.monster_y + b]);
+            }
+        }
+        depth_before = depth;
     }
-    try testing.expect(m.memory[rogue.depth_tens] * 10 + m.memory[rogue.depth_ones] >= 20);
+    try testing.expect(deaths >= 3);
+    try testing.expect(kills >= 10);
+    try testing.expect(deepest >= 3);
+}
+
+test "rogue attacks a monster by walking into it and kills it in two hits" {
+    var diagnostic: Diagnostic = .{};
+    const program = try assemble(testing.allocator, rogue_source, &diagnostic);
+    defer testing.allocator.free(program);
+    var m: figment.Machine = undefined;
+    try startRogue(&m, program);
+    openRoom(&m);
+    putMonster(&m, 0, 3, 7, 2);
+    try press(&m, rogue.right);
+    try testing.expectEqual(1, m.memory[rogue.monster_hp]);
+    try testing.expectEqual(2, m.memory[rogue.player_x]);
+    try testing.expectEqual(8, m.memory[rogue.player_hp]);
+    try press(&m, rogue.right);
+    try testing.expectEqual(0, m.memory[rogue.monster_hp]);
+    try testing.expectEqual(2, m.memory[rogue.player_x]);
+    try testing.expectEqual(8, m.memory[rogue.player_hp]);
+    try press(&m, rogue.right);
+    try testing.expectEqual(3, m.memory[rogue.player_x]);
+    putMonster(&m, 0, 2, 7, 2);
+    m.memory[rogue.turn] = 0;
+    try press(&m, rogue.left);
+    try testing.expectEqual(1, m.memory[rogue.monster_hp]);
+    try testing.expectEqual(7, m.memory[rogue.player_hp]);
+}
+
+test "rogue monsters act every other turn, so the player can outrun them and strike first" {
+    var diagnostic: Diagnostic = .{};
+    const program = try assemble(testing.allocator, rogue_source, &diagnostic);
+    defer testing.allocator.free(program);
+    var m: figment.Machine = undefined;
+    try startRogue(&m, program);
+    openRoom(&m);
+    putMonster(&m, 0, 8, 7, 2);
+    for ([_]u8{ 7, 7, 6 }, 3..) |monster_x, player_x| {
+        try press(&m, rogue.right);
+        try testing.expectEqual(player_x, m.memory[rogue.player_x]);
+        try testing.expectEqual(monster_x, m.memory[rogue.monster_x]);
+    }
+    try press(&m, rogue.right);
+    try testing.expectEqual(5, m.memory[rogue.player_x]);
+    try testing.expectEqual(1, m.memory[rogue.monster_hp]);
+    try press(&m, rogue.right);
+    try testing.expectEqual(0, m.memory[rogue.monster_hp]);
+    try testing.expectEqual(rogue.max_hp, m.memory[rogue.player_hp]);
+}
+
+test "rogue monsters step toward the player and go around a wall" {
+    var diagnostic: Diagnostic = .{};
+    const program = try assemble(testing.allocator, rogue_source, &diagnostic);
+    defer testing.allocator.free(program);
+    var m: figment.Machine = undefined;
+    try startRogue(&m, program);
+    openRoom(&m);
+    putMonster(&m, 0, 8, 7, 2);
+    putMonster(&m, 1, 8, 9, 2);
+    tile(&m, 7, 9).* = rogue.wall;
+    try press(&m, rogue.right);
+    try testing.expectEqual(3, m.memory[rogue.player_x]);
+    try testing.expectEqualSlices(u8, &.{ 7, 8 }, m.memory[rogue.monster_x..][0..2]);
+    try testing.expectEqualSlices(u8, &.{ 7, 8 }, m.memory[rogue.monster_y..][0..2]);
+    try testing.expectEqual(rogue.max_hp, m.memory[rogue.player_hp]);
+}
+
+test "rogue monsters do not walk into each other" {
+    var diagnostic: Diagnostic = .{};
+    const program = try assemble(testing.allocator, rogue_source, &diagnostic);
+    defer testing.allocator.free(program);
+    var m: figment.Machine = undefined;
+    try startRogue(&m, program);
+    openRoom(&m);
+    putMonster(&m, 0, 9, 7, 2);
+    putMonster(&m, 1, 8, 7, 2);
+    try press(&m, rogue.right);
+    try testing.expectEqualSlices(u8, &.{ 9, 7 }, m.memory[rogue.monster_x..][0..2]);
+}
+
+test "rogue ends the run at 0 HP and starts over on the next arrow" {
+    var diagnostic: Diagnostic = .{};
+    const program = try assemble(testing.allocator, rogue_source, &diagnostic);
+    defer testing.allocator.free(program);
+    var m: figment.Machine = undefined;
+    try startRogue(&m, program);
+    m.memory[rogue.depth_ones] = 5;
+    openRoom(&m);
+    putMonster(&m, 0, 4, 7, 2);
+    m.memory[rogue.player_hp] = 1;
+    try press(&m, rogue.right);
+    try testing.expectEqual(0, m.memory[rogue.player_hp]);
+    try testing.expectEqual(1, m.memory[rogue.dead]);
+    for (0..30) |_| _ = try runFrame(&m);
+    try testing.expectEqual(3, m.memory[rogue.player_x]);
+    try testing.expectEqual(5, m.memory[rogue.depth_ones]);
+    try press(&m, rogue.left);
+    try testing.expectEqual(0, m.memory[rogue.dead]);
+    try testing.expectEqual(rogue.max_hp, m.memory[rogue.player_hp]);
+    try testing.expectEqual(1, m.memory[rogue.depth_ones]);
+    try testing.expectEqual(1, liveMonsters(&m));
 }
 
 test "rogue stops counting the depth at 99" {
@@ -633,8 +862,8 @@ test "rogue stops counting the depth at 99" {
         // Put the stairs to the player's right, step onto them, and let the new floor draw.
         const x = m.memory[rogue.player_x];
         const y = m.memory[rogue.player_y];
-        m.memory[rogue.map + @as(usize, y) * 16 + x + 1] = 2;
-        m.memory[figment.keys] = 0b1000;
+        tile(&m, x + 1, y).* = rogue.stairs;
+        m.memory[figment.keys] = rogue.right;
         _ = try runFrame(&m);
         m.memory[figment.keys] = 0;
         _ = try runFrame(&m);
