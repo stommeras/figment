@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Figment</title>
-<meta name="description" content="A made-up 8-bit console that runs in the browser. Play Rogue and the demo, or load your own program.">
+<meta name="description" content="A made-up 8-bit console that runs in the browser. Play Rogue, Tangle and the demo, or load your own program.">
 <!-- The 16 by 16 console icon, in palette colors: gray body, slate bezel, the self-test's pass green, a d-pad and two red buttons. -->
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' shape-rendering='crispEdges'%3E%3Crect x='1' y='1' width='14' height='14' fill='%23A7ADB8'/%3E%3Crect x='2' y='2' width='12' height='8' fill='%234A4F5C'/%3E%3Crect x='3' y='3' width='10' height='6' fill='%233CC45A'/%3E%3Crect x='3' y='11' width='1' height='3' fill='%234A4F5C'/%3E%3Crect x='2' y='12' width='3' height='1' fill='%234A4F5C'/%3E%3Crect x='11' y='12' width='1' height='1' fill='%23E8343F'/%3E%3Crect x='13' y='12' width='1' height='1' fill='%23E8343F'/%3E%3C/svg%3E">
 <style>
@@ -113,7 +113,7 @@
 <header>
   <!-- "FIGMENT" in 8 by 8 glyphs like the screen's, with a black shadow one pixel down and right. -->
   <h1><svg role="img" aria-label="Figment" viewBox="0 0 57 8" shape-rendering="crispEdges"><path id="wordmark" d="M1 0h6v1h-6zM10 0h4v1h-4zM18 0h4v1h-4zM24 0h2v1h-2zM29 0h2v1h-2zM33 0h6v1h-6zM41 0h2v1h-2zM45 0h2v1h-2zM49 0h6v1h-6zM1 1h2v1h-2zM11 1h2v1h-2zM17 1h2v1h-2zM21 1h2v1h-2zM24 1h3v1h-3zM28 1h3v1h-3zM33 1h2v1h-2zM41 1h3v1h-3zM45 1h2v1h-2zM51 1h2v1h-2zM1 2h2v1h-2zM11 2h2v1h-2zM17 2h2v1h-2zM24 2h7v1h-7zM33 2h2v1h-2zM41 2h6v1h-6zM51 2h2v1h-2zM1 3h5v1h-5zM11 3h2v1h-2zM17 3h2v1h-2zM20 3h3v1h-3zM24 3h2v1h-2zM27 3h1v1h-1zM29 3h2v1h-2zM33 3h5v1h-5zM41 3h6v1h-6zM51 3h2v1h-2zM1 4h2v1h-2zM11 4h2v1h-2zM17 4h2v1h-2zM21 4h2v1h-2zM24 4h2v1h-2zM29 4h2v1h-2zM33 4h2v1h-2zM41 4h2v1h-2zM44 4h3v1h-3zM51 4h2v1h-2zM1 5h2v1h-2zM11 5h2v1h-2zM17 5h2v1h-2zM21 5h2v1h-2zM24 5h2v1h-2zM29 5h2v1h-2zM33 5h2v1h-2zM41 5h2v1h-2zM45 5h2v1h-2zM51 5h2v1h-2zM1 6h2v1h-2zM10 6h4v1h-4zM18 6h4v1h-4zM24 6h2v1h-2zM29 6h2v1h-2zM33 6h6v1h-6zM41 6h2v1h-2zM45 6h2v1h-2zM51 6h2v1h-2z"/><use href="#wordmark" fill="#000000" transform="translate(1 1)"/><use href="#wordmark" fill="#F4F1E8"/></svg></h1>
-  <p>A made-up 8-bit console that runs in the browser. Play Rogue and the demo, or load your own program.</p>
+  <p>A made-up 8-bit console that runs in the browser. Play Rogue, Tangle and the demo, or load your own program.</p>
 </header>
 <div class="console">
   <div class="bezel">
@@ -129,6 +129,7 @@
 <p id="error" role="alert"></p>
 <nav>
   <a href="?program=rogue.bin">Rogue</a>
+  <a href="?program=tangle.bin">Tangle</a>
   <a href="?program=demo.bin">Demo</a>
   <a href="?">Self-test</a>
   <label>Load .bin<input type="file" accept=".bin"></label>
