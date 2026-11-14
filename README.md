@@ -2,7 +2,7 @@
 
 A console that never existed as hardware. Figment is a made-up 8-bit machine with 16 registers, 32 KB of memory, a 128 by 128 screen with 16 colors, and a beeper. The emulator is written in Zig and compiles to WebAssembly.
 
-[SPEC.md](SPEC.md) defines the machine and lists the milestones. Milestones 1 to 6 are done. The CPU runs every instruction, `figment-asm` assembles programs with constants and local labels, the screen shows on a web page and in a terminal, and the page passes keys in, plays the beeper and runs 60 frames a second. Open the page with `?program=demo.bin` for a dot you steer with the arrows, or `?program=rogue.bin` for the first game, a roguelike where you move with the arrows, walk into monsters to hit them, and take the stairs down to a new random cave. Monsters move every other turn, so you can outrun them. A run ends at 0 HP, and an arrow starts a new one.
+[SPEC.md](SPEC.md) defines the machine and lists the milestones. Milestones 1 to 6 are done. The CPU runs every instruction, `figment-asm` assembles programs with constants and local labels, the screen shows on a web page and in a terminal, and the page passes keys in, plays the beeper and runs 60 frames a second. Open the page with `?program=demo.bin` for a dot you steer with the arrows, or `?program=rogue.bin` for the first game, a roguelike where you move with the arrows, walk into monsters to hit them, and take the stairs down to a new random cave. Monsters move every other turn, so you can outrun them, and they have more HP on deeper floors. The status line shows the HP the last monster you hit has left. Each floor has a heart that heals 3 HP. A run ends at 0 HP, and an arrow starts a new one.
 
 ## Build
 
