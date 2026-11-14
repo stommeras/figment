@@ -120,14 +120,14 @@ An unknown opcode is the only fault. Register numbers and addresses cannot be ou
 
 ## Assembly language (milestone 3)
 
-`zig build` installs the assembler as `zig-out/bin/figment-asm`. `figment-asm program.asm program.bin` reads a source file and writes the bytes that load at `0x0000`. On an error it prints `file:line: message`, writes nothing and exits with 1.
+`zig build` installs the assembler as `zig-out/bin/figment-asm`. `figment-asm program.asm program.bin` reads a source file and writes the bytes that load at `0x0000`. On an error in the source it prints `file:line: message`, writes nothing and exits with 1. Any other error, such as a file it cannot read, also exits with 1.
 
 A line holds an optional label, then an optional instruction or directive. `;` starts a comment that runs to the end of the line.
 
 - A label is a name followed by `:`. Its value is the address of the next byte the assembler emits. A name starts with a letter or `_` and goes on with letters, digits and `_`. Names are case-sensitive, a name is defined once, and a register name cannot be a label.
 - An instruction is a mnemonic from the instruction table followed by its operands, separated by commas. Mnemonics and register names ignore case.
 - A register is `r0` to `r9` or `rA` to `rF`.
-- A number is decimal, or hexadecimal with `0x`, binary with `0b` or octal with `0o`. `_` may separate digits.
+- A number is decimal, or hexadecimal with `0x`, binary with `0b` or octal with `0o`, with the prefix in either case. `_` may separate digits.
 - An immediate `n` is a number from 0 to 255.
 - An address is a number from 0 to `0xFFFF` or a label. It is written bare after `JMP`, the conditional jumps and `CALL`, and in brackets after `LD` and `ST`, as in `LD r1, [0x1000]`.
 - A register pair is written `[h:l]`, as in `ST r1, [r2:r3]`.

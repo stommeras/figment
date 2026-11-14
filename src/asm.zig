@@ -1,6 +1,8 @@
 //! The Figment assembler. SPEC.md defines the language.
 const std = @import("std");
 
+const figment = @import("figment");
+
 pub const Diagnostic = struct { line: usize = 0, message: []const u8 = "" };
 
 pub const Error = error{ Syntax, OutOfMemory };
@@ -55,7 +57,7 @@ pub fn assemble(gpa: std.mem.Allocator, source: []const u8, diagnostic: *Diagnos
             const form = try findForm(diagnostic, mnemonic, operands[0..count]);
             try encode(gpa, diagnostic, &out, &fixups, form, operands[0..count]);
         }
-        if (out.items.len > memory_size) return fail(diagnostic, "the program does not fit in memory");
+        if (out.items.len > figment.memory_size) return fail(diagnostic, "the program does not fit in memory");
     }
 
     for (fixups.items) |fixup| {
@@ -66,8 +68,6 @@ pub fn assemble(gpa: std.mem.Allocator, source: []const u8, diagnostic: *Diagnos
     }
     return out.toOwnedSlice(gpa);
 }
-
-const memory_size = 0x8000;
 
 const Fixup = struct { offset: usize, label: []const u8, line: usize };
 
@@ -184,7 +184,10 @@ fn parseOperand(diagnostic: *Diagnostic, raw: []const u8) error{Syntax}!Operand 
 fn parseValue(diagnostic: *Diagnostic, text: []const u8) error{Syntax}!Value {
     if (text.len > 0 and nameLength(text) == text.len) return .{ .label = text };
     if (text.len == 0 or !std.ascii.isDigit(text[0])) return fail(diagnostic, "invalid operand");
-    return .{ .number = std.fmt.parseInt(u64, text, 0) catch return fail(diagnostic, "invalid operand") };
+    return .{ .number = std.fmt.parseInt(u64, text, 0) catch |err| switch (err) {
+        error.Overflow => std.math.maxInt(u64),
+        error.InvalidCharacter => return fail(diagnostic, "invalid operand"),
+    } };
 }
 
 fn register(text: []const u8) ?u4 {
@@ -214,10 +217,13 @@ pub fn main(init: std.process.Init) !void {
     const args = try init.minimal.args.toSlice(arena);
     if (args.len != 3) {
         std.debug.print("usage: figment-asm <source> <output>\n", .{});
-        std.process.exit(2);
+        std.process.exit(1);
     }
     const cwd = std.Io.Dir.cwd();
-    const source = try cwd.readFileAlloc(init.io, args[1], arena, .limited(1 << 24));
+    const source = cwd.readFileAlloc(init.io, args[1], arena, .limited(1 << 24)) catch |err| {
+        std.debug.print("{s}: cannot read: {t}\n", .{ args[1], err });
+        std.process.exit(1);
+    };
     var diagnostic: Diagnostic = .{};
     const program = assemble(arena, source, &diagnostic) catch |err| switch (err) {
         error.Syntax => {
@@ -226,7 +232,10 @@ pub fn main(init: std.process.Init) !void {
         },
         error.OutOfMemory => return err,
     };
-    try cwd.writeFile(init.io, .{ .sub_path = args[2], .data = program });
+    cwd.writeFile(init.io, .{ .sub_path = args[2], .data = program }) catch |err| {
+        std.debug.print("{s}: cannot write: {t}\n", .{ args[2], err });
+        std.process.exit(1);
+    };
 }
 
 const testing = std.testing;
@@ -302,10 +311,15 @@ test "every instruction assembles to the encoding in SPEC.md" {
 }
 
 test "aliasing: the same register twice, and the destination in the address" {
-    try expectBytes("ADD r1, r1", &.{ 0x20, 0x11 });
-    try expectBytes("MOV rF, rF", &.{ 0x11, 0xFF });
+    for ([_][]const u8{ "MOV", "ADD", "ADC", "SUB", "SBC", "CMP", "AND", "OR", "XOR" }, [_]u8{ 0x11, 0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27 }) |mnemonic, opcode| {
+        var line: [16]u8 = undefined;
+        try expectBytes(try std.fmt.bufPrint(&line, "{s} rF, rF", .{mnemonic}), &.{ opcode, 0xFF });
+    }
     try expectBytes("LD r2, [r2:r3]", &.{ 0x52, 0x20, 0x23 });
     try expectBytes("LD r3, [r2:r3]", &.{ 0x52, 0x30, 0x23 });
+    try expectBytes("LD r5, [r5:r5]", &.{ 0x52, 0x50, 0x55 });
+    try expectBytes("ST r2, [r2:r3]", &.{ 0x53, 0x20, 0x23 });
+    try expectBytes("ST r3, [r2:r3]", &.{ 0x53, 0x30, 0x23 });
     try expectBytes("ST r5, [r5:r5]", &.{ 0x53, 0x50, 0x55 });
 }
 
@@ -373,6 +387,7 @@ test "errors name the line and the problem" {
     try expectSyntaxError(".byte 256", 1, "an immediate is a number from 0 to 255");
     try expectSyntaxError(".byte", 1, "missing operand");
     try expectSyntaxError("JMP 0x10000", 1, "an address is a number from 0 to 0xFFFF");
+    try expectSyntaxError("JMP 0x1_0000_0000_0000_0000", 1, "an address is a number from 0 to 0xFFFF");
     try expectSyntaxError("LDI r1, 12a", 1, "invalid operand");
     try expectSyntaxError("LDI r1, -1", 1, "invalid operand");
     try expectSyntaxError("LD r1, [r2:7]", 1, "invalid operand");
@@ -386,15 +401,13 @@ test "errors name the line and the problem" {
 test "a program must fit in memory" {
     var source: std.ArrayList(u8) = .empty;
     defer source.deinit(testing.allocator);
-    for (0..0x8000) |_| try source.appendSlice(testing.allocator, ".byte 0\n");
+    for (0..figment.memory_size) |_| try source.appendSlice(testing.allocator, ".byte 0\n");
     var diagnostic: Diagnostic = .{};
     const bytes = try assemble(testing.allocator, source.items, &diagnostic);
     testing.allocator.free(bytes);
     try source.appendSlice(testing.allocator, "HLT\n");
-    try expectSyntaxError(source.items, 0x8001, "the program does not fit in memory");
+    try expectSyntaxError(source.items, figment.memory_size + 1, "the program does not fit in memory");
 }
-
-const figment = @import("figment");
 
 fn runSelfTest(source: []const u8) !figment.Machine {
     var diagnostic: Diagnostic = .{};
