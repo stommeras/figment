@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>figment</title>
+<style>
+  body {
+    margin: 0;
+    min-height: 100vh;
+    display: grid;
+    place-content: center;
+    gap: 12px;
+    padding: 16px;
+    box-sizing: border-box;
+    background: #111;
+    color: #ddd;
+    font: 14px ui-monospace, monospace;
+  }
+  canvas {
+    width: min(512px, calc(100vw - 32px));
+    aspect-ratio: 1;
+    image-rendering: pixelated;
+  }
+  p { margin: 0; }
+</style>
+</head>
+<body>
+<canvas width="128" height="128" aria-label="The figment screen"></canvas>
+<p id="state">loading</p>
+<p id="error" role="alert"></p>
+<label>Program <input type="file" accept=".bin"></label>
+<script type="module">
+const memorySize = 0x8000;
+const screenStart = 0x4000;
+const screenSize = 128;
+const stepsPerFrame = 100000;
+
+const stateText = document.querySelector("#state");
+const errorText = document.querySelector("#error");
+const canvas = document.querySelector("canvas");
+const context = canvas.getContext("2d");
+const image = context.createImageData(screenSize, screenSize);
+const pixels = new Uint32Array(image.data.buffer);
+const states = ["running", "halted", "faulted"];
+
+let wasm;
+let palette;
+
+function load(program) {
+  if (program.length > memorySize) {
+    errorText.textContent = "the program does not fit in memory";
+    return;
+  }
+  errorText.textContent = "";
+  wasm.reset(crypto.getRandomValues(new Uint32Array(1))[0]);
+  new Uint8Array(wasm.memory.buffer, wasm.memory_ptr(), program.length).set(program);
+}
+
+function frame() {
+  const state = states[wasm.step(stepsPerFrame)];
+  const screen = new Uint8Array(wasm.memory.buffer, wasm.memory_ptr() + screenStart, screenSize * screenSize);
+  for (let i = 0; i < screen.length; i++) pixels[i] = palette[screen[i] & 15];
+  context.putImageData(image, 0, 0);
+  if (stateText.textContent !== state) stateText.textContent = state;
+  requestAnimationFrame(frame);
+}
+
+document.querySelector("input").addEventListener("change", async (event) => {
+  const file = event.target.files[0];
+  if (file) load(new Uint8Array(await file.arrayBuffer()));
+  event.target.value = "";
+});
+
+async function fetchBytes(url) {
+  const response = await fetch(url);
+  if (!response.ok) throw new Error(`cannot load ${url}: ${response.status}`);
+  return response;
+}
+
+try {
+  ({ exports: wasm } = (await WebAssembly.instantiateStreaming(fetchBytes("figment.wasm"))).instance);
+  const paletteBytes = new Uint8Array(wasm.memory.buffer, wasm.palette_ptr(), 48);
+  palette = Array.from({ length: 16 }, (_, i) => 0xff000000 | (paletteBytes[i * 3 + 2] << 16) | (paletteBytes[i * 3 + 1] << 8) | paletteBytes[i * 3]);
+  load(new Uint8Array(await (await fetchBytes("self-test.bin")).arrayBuffer()));
+  requestAnimationFrame(frame);
+} catch (error) {
+  stateText.textContent = "";
+  errorText.textContent = error.message;
+}
+</script>
+</body>
+</html>
