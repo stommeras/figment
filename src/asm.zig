@@ -1,4 +1,3 @@
-//! The Figment assembler. SPEC.md defines the language.
 const std = @import("std");
 
 const figment = @import("figment");
@@ -351,7 +350,7 @@ test "a label is the address of the next byte, used before or after it is define
         \\        .byte 1, 2
         \\middle:
         \\        CALL middle
-        \\end:    JZ start ; end is 8
+        \\end:    JZ start
         \\        LD r1, [middle]
         \\_x_1:   ST r1, [_x_1]
     , &.{ 0x60, 0x08, 0x00, 1, 2, 0x70, 0x05, 0x00, 0x61, 0x00, 0x00, 0x50, 0x10, 0x05, 0x00, 0x51, 0x10, 0x0F, 0x00 });

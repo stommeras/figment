@@ -61,7 +61,6 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(wasm_tests).step);
     test_step.dependOn(&b.addRunArtifact(asm_tests).step);
 
-    // The command line: a source error prints file:line: message and exits with 1.
     const bad_source = b.addWriteFiles().add("bad.asm", "HLT\nNOP\n");
     const asm_cli = b.addRunArtifact(asm_exe);
     asm_cli.addFileArg(bad_source);

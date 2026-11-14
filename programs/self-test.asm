@@ -1,7 +1,3 @@
-; Checks the stack, CALL and RET, both LD and ST forms, the shifts, the logic
-; operations and the conditional jumps, then fills the screen with 0x0B if
-; every check passed or 0x08 if one failed.
-
         LDI r1, 0x5A
         PUSH r1
         POP r2
@@ -17,16 +13,16 @@
         CMP r6, r1
         JNZ fail
         LDI r7, 0x81
-        SHL r7          ; r7 is 0x02 and C is 1
+        SHL r7
         JNC fail
-        SHR r7          ; r7 is 0x01 and C is 0
+        SHR r7
         JC fail
         AND r7, 1
         JZ fail
         XOR r7, 1
         JNZ fail
         OR r7, 0xA5
-        LD r8, [0x9000] ; the top bit is ignored, so this reads 0x1000
+        LD r8, [0x9000]
         OR r7, r8
         CMP r7, 0xFF
         JNZ fail
