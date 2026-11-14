@@ -1,4 +1,4 @@
-//! The host interface from SPEC.md. `step` arrives with the first instructions in milestone 1.
+//! The host interface from SPEC.md.
 const std = @import("std");
 
 const figment = @import("figment");
@@ -15,6 +15,14 @@ export fn reset(seed: u32) void {
     machine.reset();
 }
 
+export fn step(n: u32) u32 {
+    for (0..n) |_| {
+        if (machine.state != .running) break;
+        machine.step();
+    }
+    return state();
+}
+
 export fn state() u32 {
     return @backingInt(machine.state);
 }
@@ -24,6 +32,30 @@ test "reset returns the machine to running" {
     try std.testing.expectEqual(1, state());
     reset(0);
     try std.testing.expectEqual(0, state());
+}
+
+fn load(program: []const u8) void {
+    reset(0);
+    @memcpy(machine.memory[0..program.len], program);
+}
+
+test "step runs exactly n instructions" {
+    load(&.{ 0x10, 0x10, 0x01, 0x10, 0x20, 0x02, 0x10, 0x30, 0x03 });
+    try std.testing.expectEqual(0, step(2));
+    try std.testing.expectEqual(6, machine.pc);
+    try std.testing.expectEqual(0, machine.r[3]);
+    try std.testing.expectEqual(0, step(0));
+    try std.testing.expectEqual(6, machine.pc);
+}
+
+test "step stops early and returns the state when the machine halts or faults" {
+    load(&.{ 0x10, 0x10, 0x01, 0x00 });
+    try std.testing.expectEqual(1, step(100));
+    try std.testing.expectEqual(3, machine.pc);
+    load(&.{ 0x10, 0x10, 0x01, 0xFF });
+    try std.testing.expectEqual(2, step(100));
+    try std.testing.expectEqual(3, machine.pc);
+    try std.testing.expectEqual(2, step(100));
 }
 
 test "the built wasm module imports nothing and exports its memory" {
@@ -48,7 +80,8 @@ test "the built wasm module imports nothing and exports its memory" {
         if (id == 7) exports = wasm[i..][0..size];
         i += size;
     }
-    for ([_][]const u8{ "memory", "memory_ptr", "reset", "state" }) |name| {
-        try std.testing.expect(std.mem.find(u8, exports, name) != null);
+    // Each export is a length-prefixed name followed by its kind, 0 for a function and 2 for memory.
+    for ([_][]const u8{ "\x06memory\x02", "\x0Amemory_ptr\x00", "\x05reset\x00", "\x04step\x00", "\x05state\x00" }) |entry| {
+        try std.testing.expect(std.mem.find(u8, exports, entry) != null);
     }
 }
