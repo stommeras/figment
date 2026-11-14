@@ -443,6 +443,34 @@ test "the self-test program fails when every random byte is the same" {
     for (m.memory[figment.screen_start..]) |pixel| try testing.expectEqual(0x08, pixel);
 }
 
+test "rogue keeps the player off the walls, goes down stairs and ends every frame in time" {
+    var diagnostic: Diagnostic = .{};
+    const program = try assemble(testing.allocator, @embedFile("rogue.asm"), &diagnostic);
+    defer testing.allocator.free(program);
+    var m: figment.Machine = undefined;
+    m.reset(0);
+    @memcpy(m.memory[0..program.len], program);
+    var most: usize = 0;
+    var r: std.Random.DefaultPrng = .init(1);
+    for (0..20_000) |i| {
+        // A random arrow on every other frame, so each one is a fresh press.
+        m.memory[figment.keys] = if (i % 2 == 0) @as(u8, 1) << r.random().int(u2) else 0;
+        m.frame_ended = false;
+        var n: usize = 0;
+        while (!m.frame_ended) : (n += 1) {
+            m.step();
+            try testing.expectEqual(figment.State.running, m.state);
+        }
+        most = @max(most, n);
+        const x = m.memory[0x3100];
+        const y = m.memory[0x3101];
+        try testing.expect(x < 16 and y < 15);
+        try testing.expect(m.memory[0x3000 + @as(usize, y) * 16 + x] != 1);
+    }
+    try testing.expect(most < 100_000);
+    try testing.expect(m.memory[0x3102] * 10 + m.memory[0x3103] > 1);
+}
+
 test "the demo ends every frame well inside the 100,000 instructions SPEC.md allows" {
     var diagnostic: Diagnostic = .{};
     const program = try assemble(testing.allocator, @embedFile("demo.asm"), &diagnostic);
