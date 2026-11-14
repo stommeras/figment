@@ -1,5 +1,6 @@
 ; A one-screen roguelike. Walk with the arrows, walk into monsters to hit them,
-; pick up hearts, and take the stairs down. At 0 HP the run ends, and an arrow starts a new one.
+; pick up hearts, and take the stairs down.
+; At 0 HP the run ends, and an arrow starts a new one.
 ;
 ; The map is 16 by 15 tiles of 8 by 8 pixels, below a status line that shows the depth,
 ; the HP the last monster hit has left, and the player's HP.
@@ -38,7 +39,7 @@ STAIRS = 2
 PLAYER = 3                      ; the other glyphs
 DIGIT_0 = 4
 MONSTER = 14
-HEART = 15                      ; a tile as well
+HEART = 15                      ; also a map tile
 
 UP = 0b0001
 DOWN = 0b0010
@@ -298,7 +299,7 @@ die:    LDI r0, 1
         LDI r1, 30
         JMP beep
 
-; Adds r1 to the player's HP, up to MAX_HP.
+; Adds r1 to the player's HP, up to MAX_HP. Uses r0.
 heal:   LD r0, [PLAYER_HP]
         ADD r0, r1
         CMP r0, MAX_HP
@@ -389,7 +390,7 @@ new_floor:
         CALL clear_monster_hp
         JMP draw_status
 
-; Uses r0, r5 to r8 and rE.
+; Puts a heart on a random floor tile other than the player's. Uses r0, r5 to r8 and rE.
 place_heart:
         LDI rE, 0
 .try:   SUB rE, 1
@@ -589,7 +590,7 @@ draw_monster:
         LDI r1, GREEN
         JMP draw_tile
 
-; Draws a monster and HP r0 on the status line.
+; Draws a monster and HP r0 on the status line. Keeps r4 and rC.
 draw_monster_hp:
         LDI r7, 8
         LDI r8, 0
@@ -601,6 +602,7 @@ draw_monster_hp:
         LDI r0, MONSTER
         JMP draw_tile
 
+; Keeps r4 and rC.
 clear_monster_hp:
         LDI r8, 0
         LDI r0, FLOOR

@@ -899,8 +899,13 @@ test "rogue puts one heart on each floor, off the player" {
             try descendFrom(&m, 0, 1);
         }
         var hearts: usize = 0;
-        for (m.memory[rogue.map..][0 .. 16 * 15]) |t| hearts += @intFromBool(t == rogue.heart);
+        var stairs: usize = 0;
+        for (m.memory[rogue.map..][0 .. 16 * 15]) |t| {
+            hearts += @intFromBool(t == rogue.heart);
+            stairs += @intFromBool(t == rogue.stairs);
+        }
         try testing.expectEqual(1, hearts);
+        try testing.expectEqual(1, stairs);
         try testing.expect(tile(&m, m.memory[rogue.player_x], m.memory[rogue.player_y]).* != rogue.heart);
     }
 }
@@ -925,7 +930,7 @@ test "rogue heals 3 HP, up to the max, when the player walks onto a heart" {
     try testing.expectEqual(0, tile(&m, 4, 7).*);
 }
 
-test "rogue shows the HP a monster has left after a hit, and clears it on a new floor" {
+test "rogue shows the HP a monster has left after a hit, 0 after a kill, and clears it on a new floor" {
     var diagnostic: Diagnostic = .{};
     const program = try assemble(testing.allocator, rogue_source, &diagnostic);
     defer testing.allocator.free(program);
@@ -943,6 +948,11 @@ test "rogue shows the HP a monster has left after a hit, and clears it on a new 
     try testing.expectEqual(2, m.memory[rogue.player_hp]);
     try testing.expectEqualSlices(u8, &statusTile(&m, 15), &statusTile(&m, 8));
     try testing.expect(!std.mem.eql(u8, &blank, &statusTile(&m, 7)));
+    try press(&m, rogue.right);
+    try press(&m, rogue.right);
+    try testing.expectEqual(0, m.memory[rogue.monster_hp]);
+    // A kill shows 0, the same digit as the depth's tens on the left.
+    try testing.expectEqualSlices(u8, &statusTile(&m, 1), &statusTile(&m, 8));
     removeMonsters(&m);
     try descendFrom(&m, 0, 1);
     try testing.expectEqualSlices(u8, &blank, &statusTile(&m, 7));
