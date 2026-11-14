@@ -7,12 +7,10 @@ pub const Diagnostic = struct { line: usize = 0, message: []const u8 = "" };
 pub const Error = error{ Syntax, OutOfMemory };
 
 pub fn assemble(gpa: std.mem.Allocator, source: []const u8, diagnostic: *Diagnostic) Error![]u8 {
-    var out: std.ArrayList(u8) = .empty;
-    errdefer out.deinit(gpa);
-    var labels: std.StringHashMapUnmanaged(u16) = .empty;
-    defer labels.deinit(gpa);
-    var fixups: std.ArrayList(Fixup) = .empty;
-    defer fixups.deinit(gpa);
+    var arena: std.heap.ArenaAllocator = .init(gpa);
+    defer arena.deinit();
+    var a: Assembler = .{ .gpa = gpa, .arena = arena.allocator(), .diagnostic = diagnostic };
+    errdefer a.out.deinit(gpa);
 
     var lines = std.mem.splitScalar(u8, source, '\n');
     var line: usize = 0;
@@ -21,13 +19,21 @@ pub fn assemble(gpa: std.mem.Allocator, source: []const u8, diagnostic: *Diagnos
         diagnostic.line = line;
         var text = trim(raw[0 .. std.mem.findScalar(u8, raw, ';') orelse raw.len]);
 
-        const name_end = nameLength(text);
-        if (name_end > 0 and name_end < text.len and text[name_end] == ':') {
+        const name_end = symbolLength(text);
+        const after_name = trim(text[name_end..]);
+        if (name_end > 0 and text[0] != '.' and after_name.len > 0 and after_name[0] == '=') {
             const name = text[0..name_end];
-            if (register(name) != null) return fail(diagnostic, "a register name cannot be a label");
-            const entry = try labels.getOrPut(gpa, name);
-            if (entry.found_existing) return fail(diagnostic, "label is already defined");
-            entry.value_ptr.* = @intCast(out.items.len);
+            if (register(name) != null) return fail(diagnostic, "a register name cannot be a label or constant");
+            const value = trim(after_name[1..]);
+            if (value.len == 0 or !std.ascii.isDigit(value[0])) return fail(diagnostic, "a constant is a number");
+            try a.define(name, parseNumber(value) catch return fail(diagnostic, "a constant is a number"));
+            continue;
+        }
+        if (name_end > 0 and name_end < text.len and text[name_end] == ':') {
+            const name = try a.qualify(text[0..name_end]);
+            if (register(name) != null) return fail(diagnostic, "a register name cannot be a label or constant");
+            try a.define(name, a.out.items.len);
+            if (text[0] != '.') a.scope = name;
             text = trim(text[name_end + 1 ..]);
         }
         if (text.len == 0) continue;
@@ -39,9 +45,9 @@ pub fn assemble(gpa: std.mem.Allocator, source: []const u8, diagnostic: *Diagnos
         if (std.ascii.eqlIgnoreCase(mnemonic, ".byte")) {
             var items = std.mem.splitScalar(u8, rest, ',');
             while (items.next()) |item| {
-                const operand = try parseOperand(diagnostic, item);
+                const operand = try a.parseOperand(item);
                 if (operand != .value) return fail(diagnostic, "wrong operands for this instruction");
-                try out.append(gpa, try immediate(diagnostic, operand.value));
+                try a.emit(operand.value, .byte);
             }
         } else {
             var operands: [3]Operand = undefined;
@@ -50,33 +56,121 @@ pub fn assemble(gpa: std.mem.Allocator, source: []const u8, diagnostic: *Diagnos
                 var items = std.mem.splitScalar(u8, rest, ',');
                 while (items.next()) |item| : (count += 1) {
                     if (count == operands.len) return fail(diagnostic, "wrong operands for this instruction");
-                    operands[count] = try parseOperand(diagnostic, item);
+                    operands[count] = try a.parseOperand(item);
                 }
             }
             const form = try findForm(diagnostic, mnemonic, operands[0..count]);
-            try encode(gpa, diagnostic, &out, &fixups, form, operands[0..count]);
+            try a.encode(form, operands[0..count]);
         }
-        if (out.items.len > figment.memory_size) return fail(diagnostic, "the program does not fit in memory");
+        if (a.out.items.len > figment.memory_size) return fail(diagnostic, "the program does not fit in memory");
     }
 
-    for (fixups.items) |fixup| {
+    for (a.fixups.items) |fixup| {
         diagnostic.line = fixup.line;
-        const value = labels.get(fixup.label) orelse return fail(diagnostic, "undefined label");
-        out.items[fixup.offset] = @truncate(value);
-        out.items[fixup.offset + 1] = @truncate(value >> 8);
+        const value = a.resolve(fixup.value) orelse return fail(diagnostic, "undefined name");
+        try write(diagnostic, a.out.items[fixup.offset..], value, fixup.size);
     }
-    return out.toOwnedSlice(gpa);
+    return a.out.toOwnedSlice(gpa);
 }
 
-const Fixup = struct { offset: usize, label: []const u8, line: usize };
+const Size = enum { byte, address };
 
-const Value = union(enum) { number: u64, label: []const u8 };
+const Fixup = struct { offset: usize, value: Value, size: Size, line: usize };
+
+/// A number, or a label or constant that the assembler looks up after the last line.
+const Value = struct { number: u64 = 0, name: ?[]const u8 = null, part: enum { whole, lo, hi } = .whole };
 
 const Operand = union(enum) { register: u4, value: Value, memory: Value, pair: [2]u4 };
 
 const Param = enum { register, immediate, address, memory, pair };
 
 const Form = struct { mnemonic: []const u8, params: []const Param, opcode: u8 };
+
+const Assembler = struct {
+    gpa: std.mem.Allocator,
+    /// Holds the names, the fixups and the full names of local labels.
+    arena: std.mem.Allocator,
+    diagnostic: *Diagnostic,
+    out: std.ArrayList(u8) = .empty,
+    fixups: std.ArrayList(Fixup) = .empty,
+    names: std.StringHashMapUnmanaged(u64) = .empty,
+    /// The last label without a dot, which local labels belong to.
+    scope: ?[]const u8 = null,
+
+    fn define(a: *Assembler, name: []const u8, value: u64) Error!void {
+        const entry = try a.names.getOrPut(a.arena, name);
+        if (entry.found_existing) return fail(a.diagnostic, "name is already defined");
+        entry.value_ptr.* = value;
+    }
+
+    /// Turns a local label such as `.loop` into its full name, `scope.loop`.
+    fn qualify(a: *Assembler, name: []const u8) Error![]const u8 {
+        if (name[0] != '.') return name;
+        const scope = a.scope orelse return fail(a.diagnostic, "a local label needs a label above it");
+        return std.mem.concat(a.arena, u8, &.{ scope, name });
+    }
+
+    fn resolve(a: *Assembler, value: Value) ?u64 {
+        const whole = if (value.name) |name| a.names.get(name) orelse return null else value.number;
+        return switch (value.part) {
+            .whole => whole,
+            .lo => whole & 0xFF,
+            .hi => whole >> 8 & 0xFF,
+        };
+    }
+
+    /// Writes a value now if it is a number, or leaves room for it and a fixup if it names something.
+    fn emit(a: *Assembler, value: Value, size: Size) Error!void {
+        const offset = a.out.items.len;
+        try a.out.appendNTimes(a.gpa, 0, if (size == .byte) 1 else 2);
+        if (value.name == null) return write(a.diagnostic, a.out.items[offset..], a.resolve(value).?, size);
+        try a.fixups.append(a.arena, .{ .offset = offset, .value = value, .size = size, .line = a.diagnostic.line });
+    }
+
+    fn encode(a: *Assembler, form: Form, operands: []const Operand) Error!void {
+        try a.out.append(a.gpa, form.opcode);
+        if (operands.len > 0 and operands[0] == .register) {
+            const low: u4 = if (operands.len > 1 and operands[1] == .register) operands[1].register else 0;
+            try a.out.append(a.gpa, @as(u8, operands[0].register) << 4 | low);
+        }
+        for (form.params, operands) |param, operand| switch (param) {
+            .register => {},
+            .immediate => try a.emit(operand.value, .byte),
+            .address => try a.emit(operand.value, .address),
+            .memory => try a.emit(operand.memory, .address),
+            .pair => try a.out.append(a.gpa, @as(u8, operand.pair[0]) << 4 | operand.pair[1]),
+        };
+    }
+
+    fn parseOperand(a: *Assembler, raw: []const u8) Error!Operand {
+        const text = trim(raw);
+        if (text.len == 0) return fail(a.diagnostic, "missing operand");
+        if (register(text)) |r| return .{ .register = r };
+        if (text[0] != '[') return .{ .value = try a.parseValue(text) };
+        if (text.len < 2 or text[text.len - 1] != ']') return fail(a.diagnostic, "invalid operand");
+        const inner = trim(text[1 .. text.len - 1]);
+        const colon = std.mem.findScalar(u8, inner, ':') orelse return .{ .memory = try a.parseValue(inner) };
+        const h = register(trim(inner[0..colon])) orelse return fail(a.diagnostic, "invalid operand");
+        const l = register(trim(inner[colon + 1 ..])) orelse return fail(a.diagnostic, "invalid operand");
+        return .{ .pair = .{ h, l } };
+    }
+
+    fn parseValue(a: *Assembler, text: []const u8) Error!Value {
+        for ([_][]const u8{ "lo(", "hi(" }) |prefix| {
+            if (!std.ascii.startsWithIgnoreCase(text, prefix)) continue;
+            if (text[text.len - 1] != ')') return fail(a.diagnostic, "invalid operand");
+            const inner = trim(text[prefix.len .. text.len - 1]);
+            if (register(inner) != null) return fail(a.diagnostic, "invalid operand");
+            var value = try a.parseValue(inner);
+            if (value.part != .whole) return fail(a.diagnostic, "invalid operand");
+            value.part = if (prefix[0] == 'l') .lo else .hi;
+            return value;
+        }
+        if (text.len > 0 and symbolLength(text) == text.len) return .{ .name = try a.qualify(text) };
+        if (text.len == 0 or !std.ascii.isDigit(text[0])) return fail(a.diagnostic, "invalid operand");
+        return .{ .number = parseNumber(text) catch return fail(a.diagnostic, "invalid operand") };
+    }
+};
 
 const forms = forms: {
     var list: []const Form = &.{
@@ -127,71 +221,35 @@ fn findForm(diagnostic: *Diagnostic, mnemonic: []const u8, operands: []const Ope
     return fail(diagnostic, if (known) "wrong operands for this instruction" else "unknown instruction");
 }
 
-fn encode(
-    gpa: std.mem.Allocator,
-    diagnostic: *Diagnostic,
-    out: *std.ArrayList(u8),
-    fixups: *std.ArrayList(Fixup),
-    form: Form,
-    operands: []const Operand,
-) Error!void {
-    try out.append(gpa, form.opcode);
-    if (operands.len > 0 and operands[0] == .register) {
-        const low: u4 = if (operands.len > 1 and operands[1] == .register) operands[1].register else 0;
-        try out.append(gpa, @as(u8, operands[0].register) << 4 | low);
-    }
-    for (form.params, operands) |param, operand| switch (param) {
-        .register => {},
-        .immediate => try out.append(gpa, try immediate(diagnostic, operand.value)),
-        .address, .memory => {
-            const value = if (param == .address) operand.value else operand.memory;
-            switch (value) {
-                .number => |number| {
-                    if (number > 0xFFFF) return fail(diagnostic, "an address is a number from 0 to 0xFFFF");
-                    try out.appendSlice(gpa, &.{ @truncate(number), @truncate(number >> 8) });
-                },
-                .label => |label| {
-                    try fixups.append(gpa, .{ .offset = out.items.len, .label = label, .line = diagnostic.line });
-                    try out.appendSlice(gpa, &.{ 0, 0 });
-                },
-            }
+fn write(diagnostic: *Diagnostic, bytes: []u8, value: u64, size: Size) error{Syntax}!void {
+    switch (size) {
+        .byte => bytes[0] = std.math.cast(u8, value) orelse return fail(diagnostic, "an immediate is a number from 0 to 255"),
+        .address => {
+            if (value > 0xFFFF) return fail(diagnostic, "an address is a number from 0 to 0xFFFF");
+            bytes[0] = @truncate(value);
+            bytes[1] = @truncate(value >> 8);
         },
-        .pair => try out.append(gpa, @as(u8, operand.pair[0]) << 4 | operand.pair[1]),
-    };
+    }
 }
 
-fn immediate(diagnostic: *Diagnostic, value: Value) error{Syntax}!u8 {
-    return switch (value) {
-        .number => |number| std.math.cast(u8, number),
-        .label => null,
-    } orelse fail(diagnostic, "an immediate is a number from 0 to 255");
-}
-
-fn parseOperand(diagnostic: *Diagnostic, raw: []const u8) error{Syntax}!Operand {
-    const text = trim(raw);
-    if (text.len == 0) return fail(diagnostic, "missing operand");
-    if (register(text)) |r| return .{ .register = r };
-    if (text[0] != '[') return .{ .value = try parseValue(diagnostic, text) };
-    if (text.len < 2 or text[text.len - 1] != ']') return fail(diagnostic, "invalid operand");
-    const inner = trim(text[1 .. text.len - 1]);
-    const colon = std.mem.findScalar(u8, inner, ':') orelse return .{ .memory = try parseValue(diagnostic, inner) };
-    const h = register(trim(inner[0..colon])) orelse return fail(diagnostic, "invalid operand");
-    const l = register(trim(inner[colon + 1 ..])) orelse return fail(diagnostic, "invalid operand");
-    return .{ .pair = .{ h, l } };
-}
-
-fn parseValue(diagnostic: *Diagnostic, text: []const u8) error{Syntax}!Value {
-    if (text.len > 0 and nameLength(text) == text.len) return .{ .label = text };
-    if (text.len == 0 or !std.ascii.isDigit(text[0])) return fail(diagnostic, "invalid operand");
-    return .{ .number = std.fmt.parseInt(u64, text, 0) catch |err| switch (err) {
+/// A number too big for 64 bits becomes the largest one, so the range checks reject it.
+fn parseNumber(text: []const u8) error{InvalidCharacter}!u64 {
+    return std.fmt.parseInt(u64, text, 0) catch |err| switch (err) {
         error.Overflow => std.math.maxInt(u64),
-        error.InvalidCharacter => return fail(diagnostic, "invalid operand"),
-    } };
+        error.InvalidCharacter => error.InvalidCharacter,
+    };
 }
 
 fn register(text: []const u8) ?u4 {
     if (text.len != 2 or std.ascii.toLower(text[0]) != 'r') return null;
     return @intCast(std.fmt.charToDigit(text[1], 16) catch return null);
+}
+
+/// The length of the label or constant name that starts `text`, with the dot of a local label.
+fn symbolLength(text: []const u8) usize {
+    if (text.len == 0 or text[0] != '.') return nameLength(text);
+    const length = nameLength(text[1..]);
+    return if (length == 0) 0 else length + 1;
 }
 
 fn nameLength(text: []const u8) usize {
@@ -267,6 +325,21 @@ test "the SPEC.md example assembles to the SPEC.md bytes" {
         \\ADD r1, r2
         \\HLT
     , &.{ 0x10, 0x10, 0x02, 0x10, 0x20, 0x03, 0x20, 0x12, 0x00 });
+}
+
+test "the SPEC.md example with names adds up its table" {
+    const spec = @embedFile("SPEC.md");
+    const start = std.mem.find(u8, spec, "COUNT = 4\n").?;
+    const source = spec[start .. start + std.mem.find(u8, spec[start..], "```").?];
+    var diagnostic: Diagnostic = .{};
+    const program = try assemble(testing.allocator, source, &diagnostic);
+    defer testing.allocator.free(program);
+    var m: figment.Machine = undefined;
+    m.reset(0);
+    @memcpy(m.memory[0..program.len], program);
+    for (0..100) |_| m.step();
+    try testing.expectEqual(figment.State.halted, m.state);
+    try testing.expectEqual(10, m.r[0]);
 }
 
 test "every instruction assembles to the encoding in SPEC.md" {
@@ -367,6 +440,43 @@ test ".byte emits each number as one byte" {
     try expectBytes(".byte 0\n.BYTE 0x12, 255, 0b1", &.{ 0, 0x12, 0xFF, 1 });
 }
 
+test "a constant is a name for a number, used before or after it is defined" {
+    try expectBytes(
+        \\KEYS = 0x3F00
+        \\        LD r0, [KEYS]
+        \\        LDI r1, LIMIT
+        \\        CMP r1, LIMIT
+        \\        JMP KEYS
+        \\        .byte LIMIT, 2
+        \\LIMIT   =   7   ; spacing and comments as on any line
+    , &.{ 0x50, 0x00, 0x00, 0x3F, 0x10, 0x10, 0x07, 0x34, 0x10, 0x07, 0x60, 0x00, 0x3F, 7, 2 });
+}
+
+test "a name in an immediate works when its value fits in a byte" {
+    try expectBytes("LDI r1, end\nend:", &.{ 0x10, 0x10, 0x03 });
+}
+
+test "lo and hi give the low and high byte of a number or a name" {
+    try expectBytes(
+        \\BIG = 0x1234
+        \\        LDI r1, hi(BIG)
+        \\        LDI r2, LO( BIG )
+        \\        .byte lo(data), hi(data), hi(0x4000)
+        \\data:   JMP lo(BIG)
+    , &.{ 0x10, 0x10, 0x12, 0x10, 0x20, 0x34, 9, 0, 0x40, 0x60, 0x34, 0x00 });
+}
+
+test "a local label belongs to the label above it" {
+    try expectBytes(
+        \\a:      JMP .x
+        \\.x:     JMP .x
+        \\b:      JMP .x
+        \\.x:     LDI r1, lo(.x)
+        \\K = 1   ; a constant does not start a new scope
+        \\        JMP .x
+    , &.{ 0x60, 0x03, 0x00, 0x60, 0x03, 0x00, 0x60, 0x09, 0x00, 0x10, 0x10, 0x09, 0x60, 0x09, 0x00 });
+}
+
 test "an empty source assembles to no bytes" {
     try expectBytes("", &.{});
     try expectBytes("; nothing\n\n", &.{});
@@ -382,7 +492,9 @@ test "errors name the line and the problem" {
     try expectSyntaxError("LD r1, 0x10", 1, "wrong operands for this instruction");
     try expectSyntaxError("ADD r1,", 1, "missing operand");
     try expectSyntaxError("LDI r1, 256", 1, "an immediate is a number from 0 to 255");
-    try expectSyntaxError("LDI r1, here\nhere:", 1, "an immediate is a number from 0 to 255");
+    try expectSyntaxError("LDI r1, far\nfar = 0x100", 1, "an immediate is a number from 0 to 255");
+    try expectSyntaxError(".byte 1\n.byte far\nfar = 256", 2, "an immediate is a number from 0 to 255");
+    try expectSyntaxError("JMP far\nfar = 0x10000", 1, "an address is a number from 0 to 0xFFFF");
     try expectSyntaxError(".byte 256", 1, "an immediate is a number from 0 to 255");
     try expectSyntaxError(".byte", 1, "missing operand");
     try expectSyntaxError("JMP 0x10000", 1, "an address is a number from 0 to 0xFFFF");
@@ -391,9 +503,22 @@ test "errors name the line and the problem" {
     try expectSyntaxError("LDI r1, -1", 1, "invalid operand");
     try expectSyntaxError("LD r1, [r2:7]", 1, "invalid operand");
     try expectSyntaxError("LD r1, [r2", 1, "invalid operand");
-    try expectSyntaxError("\nJMP nowhere", 2, "undefined label");
-    try expectSyntaxError("x: HLT\n\nx: HLT", 3, "label is already defined");
-    try expectSyntaxError("rA: HLT", 1, "a register name cannot be a label");
+    try expectSyntaxError("\nJMP nowhere", 2, "undefined name");
+    try expectSyntaxError("LDI r1, hi(nowhere)", 1, "undefined name");
+    try expectSyntaxError("a: JMP .nowhere\nb:\n.nowhere:", 1, "undefined name");
+    try expectSyntaxError("x: HLT\n\nx: HLT", 3, "name is already defined");
+    try expectSyntaxError("x = 1\nx: HLT", 2, "name is already defined");
+    try expectSyntaxError("x: HLT\nx = 1", 2, "name is already defined");
+    try expectSyntaxError("a: HLT\n.x: HLT\n.x: HLT", 3, "name is already defined");
+    try expectSyntaxError("rA: HLT", 1, "a register name cannot be a label or constant");
+    try expectSyntaxError("rA = 1", 1, "a register name cannot be a label or constant");
+    try expectSyntaxError("x = y", 1, "a constant is a number");
+    try expectSyntaxError("x =", 1, "a constant is a number");
+    try expectSyntaxError(".x: HLT", 1, "a local label needs a label above it");
+    try expectSyntaxError("JMP .x", 1, "a local label needs a label above it");
+    try expectSyntaxError("LDI r1, lo(r1)", 1, "invalid operand");
+    try expectSyntaxError("LDI r1, hi(lo(1))", 1, "invalid operand");
+    try expectSyntaxError("LDI r1, lo(1", 1, "invalid operand");
     try expectSyntaxError("1x: HLT", 1, "unknown instruction");
 }
 
@@ -456,21 +581,27 @@ fn runFrame(m: *figment.Machine) !usize {
     return n;
 }
 
-// Where programs/rogue.asm keeps its state. Its header comment lists the same addresses.
+const rogue_source = @embedFile("rogue.asm");
+
+/// The value of a constant that programs/rogue.asm defines, such as `PLAYER_X = 0x3100`.
+fn rogueConstant(comptime name: []const u8) usize {
+    const start = std.mem.find(u8, rogue_source, "\n" ++ name ++ " = ").? + name.len + 4;
+    const end = std.mem.findAny(u8, rogue_source[start..], " \n").? + start;
+    return std.fmt.parseInt(usize, rogue_source[start..end], 0) catch unreachable;
+}
+
 const rogue = struct {
-    const map = 0x3000;
-    const player_x = 0x3100;
-    const player_y = 0x3101;
-    const depth_tens = 0x3102;
-    const depth_ones = 0x3103;
+    const map = rogueConstant("MAP");
+    const player_x = rogueConstant("PLAYER_X");
+    const player_y = rogueConstant("PLAYER_Y");
+    const depth_tens = rogueConstant("DEPTH_TENS");
+    const depth_ones = rogueConstant("DEPTH_ONES");
 };
 
 test "rogue keeps the player off the walls and goes down stairs" {
     var diagnostic: Diagnostic = .{};
-    const program = try assemble(testing.allocator, @embedFile("rogue.asm"), &diagnostic);
+    const program = try assemble(testing.allocator, rogue_source, &diagnostic);
     defer testing.allocator.free(program);
-    // draw_tile finds the glyphs at 0x0003, so the floor glyph must start there.
-    try testing.expectEqualSlices(u8, &.{ 0x00, 0x00, 0x00, 0x18, 0x18, 0x00, 0x00, 0x00 }, program[3..11]);
     var m: figment.Machine = undefined;
     m.reset(0);
     @memcpy(m.memory[0..program.len], program);
@@ -489,7 +620,7 @@ test "rogue keeps the player off the walls and goes down stairs" {
 
 test "rogue stops counting the depth at 99" {
     var diagnostic: Diagnostic = .{};
-    const program = try assemble(testing.allocator, @embedFile("rogue.asm"), &diagnostic);
+    const program = try assemble(testing.allocator, rogue_source, &diagnostic);
     defer testing.allocator.free(program);
     var m: figment.Machine = undefined;
     m.reset(0);
