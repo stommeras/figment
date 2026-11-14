@@ -8,12 +8,10 @@ pub const screen_start = 0x4000;
 /// The numbers are the ones `state()` returns to the host.
 pub const State = enum(u32) { running = 0, halted = 1, faulted = 2 };
 
-/// Drops the top bit, as SPEC.md requires of a 16-bit value used as an address.
 fn address(hi: u8, lo: u8) u15 {
     return @truncate(@as(u16, hi) << 8 | lo);
 }
 
-/// In opcode order, so `0x20 + op` and `0x30 + op` are its two forms.
 const Op = enum(u3) { add, adc, sub, sbc, cmp, @"and", @"or", xor };
 
 pub const Machine = struct {
@@ -650,72 +648,85 @@ test "SP wraps from 0x0000 to 0x7FFF and back" {
 
 const pass_color = 0x0B;
 const fail_color = 0x08;
+const sub = 0xE0;
+const fail = 0xF0;
+const fill = fail + 3;
+const loop = fill + 6;
+const end = loop + 15;
 
-const self_test = [_]u8{
-    0x10, 0x10, 0x5A, // 00 LDI r1, 0x5A
-    0x72, 0x10, // 03 PUSH r1
-    0x73, 0x20, // 05 POP r2
-    0x34, 0x20, 0x5A, // 07 CMP r2, 0x5A
-    0x62, 0xF0, 0x00, // 0A JNZ fail
-    0x70, 0xE0, 0x00, // 0D CALL sub
-    0x34, 0x30, 0x77, // 10 CMP r3, 0x77
-    0x62, 0xF0, 0x00, // 13 JNZ fail
-    0x51, 0x10, 0x00, 0x10, // 16 ST r1, [0x1000]
-    0x10, 0x40, 0x10, // 1A LDI r4, 0x10
-    0x10, 0x50, 0x00, // 1D LDI r5, 0x00
-    0x52, 0x60, 0x45, // 20 LD r6, [r4:r5]
-    0x24, 0x61, // 23 CMP r6, r1
-    0x62, 0xF0, 0x00, // 25 JNZ fail
-    0x10, 0x70, 0x81, // 28 LDI r7, 0x81
-    0x40, 0x70, // 2B SHL r7
-    0x64, 0xF0, 0x00, // 2D JNC fail
-    0x41, 0x70, // 30 SHR r7
-    0x63, 0xF0, 0x00, // 32 JC fail
-    0x35, 0x70, 0x01, // 35 AND r7, 0x01
-    0x61, 0xF0, 0x00, // 38 JZ fail
-    0x37, 0x70, 0x01, // 3B XOR r7, 0x01
-    0x62, 0xF0, 0x00, // 3E JNZ fail
-    0x36, 0x70, 0xA5, // 41 OR r7, 0xA5
-    0x50, 0x80, 0x00, 0x90, // 44 LD r8, [0x9000]
-    0x26, 0x78, // 48 OR r7, r8
-    0x34, 0x70, 0xFF, // 4A CMP r7, 0xFF
-    0x62, 0xF0, 0x00, // 4D JNZ fail
-    0x10, 0x00, pass_color, // 50 LDI r0, pass_color
-    0x60, 0xF3, 0x00, // 53 JMP fill
-};
+fn assemble(comptime instructions: []const []const u8) []const u8 {
+    comptime var bytes: []const u8 = &.{};
+    inline for (instructions) |instruction| bytes = bytes ++ instruction;
+    return bytes;
+}
+
+const self_test = assemble(&.{
+    &.{ 0x10, 0x10, 0x5A },
+    &.{ 0x72, 0x10 },
+    &.{ 0x73, 0x20 },
+    &.{ 0x34, 0x20, 0x5A },
+    &.{ 0x62, fail, 0x00 },
+    &.{ 0x70, sub, 0x00 },
+    &.{ 0x34, 0x30, 0x77 },
+    &.{ 0x62, fail, 0x00 },
+    &.{ 0x51, 0x10, 0x00, 0x10 },
+    &.{ 0x10, 0x40, 0x10 },
+    &.{ 0x10, 0x50, 0x00 },
+    &.{ 0x52, 0x60, 0x45 },
+    &.{ 0x24, 0x61 },
+    &.{ 0x62, fail, 0x00 },
+    &.{ 0x10, 0x70, 0x81 },
+    &.{ 0x40, 0x70 },
+    &.{ 0x64, fail, 0x00 },
+    &.{ 0x41, 0x70 },
+    &.{ 0x63, fail, 0x00 },
+    &.{ 0x35, 0x70, 0x01 },
+    &.{ 0x61, fail, 0x00 },
+    &.{ 0x37, 0x70, 0x01 },
+    &.{ 0x62, fail, 0x00 },
+    &.{ 0x36, 0x70, 0xA5 },
+    &.{ 0x50, 0x80, 0x00, 0x90 },
+    &.{ 0x26, 0x78 },
+    &.{ 0x34, 0x70, 0xFF },
+    &.{ 0x62, fail, 0x00 },
+    &.{ 0x10, 0x00, pass_color },
+    &.{ 0x60, fill, 0x00 },
+});
+
+const subroutine = assemble(&.{
+    &.{ 0x10, 0x30, 0x77 },
+    &.{0x71},
+});
+
+const fail_and_fill = assemble(&.{
+    &.{ 0x10, 0x00, fail_color },
+    &.{ 0x10, 0x40, 0x40 },
+    &.{ 0x10, 0x50, 0x00 },
+    &.{ 0x53, 0x00, 0x45 },
+    &.{ 0x30, 0x50, 0x01 },
+    &.{ 0x31, 0x40, 0x00 },
+    &.{ 0x34, 0x40, 0x80 },
+    &.{ 0x62, loop, 0x00 },
+    &.{0x00},
+});
 
 fn runSelfTest(main: []const u8) !Machine {
-    const sub = [_]u8{
-        0x10, 0x30, 0x77, // E0 LDI r3, 0x77
-        0x71, // E3 RET
-    };
-    const fail_and_fill = [_]u8{
-        0x10, 0x00, fail_color, // F0 fail: LDI r0, fail_color
-        0x10, 0x40, 0x40, // F3 fill: LDI r4, 0x40
-        0x10, 0x50, 0x00, // F6 LDI r5, 0x00
-        0x53, 0x00, 0x45, // F9 loop: ST r0, [r4:r5]
-        0x30, 0x50, 0x01, // FC ADD r5, 1
-        0x31, 0x40, 0x00, // FF ADC r4, 0
-        0x34, 0x40, 0x80, // 102 CMP r4, 0x80
-        0x62, 0xF9, 0x00, // 105 JNZ loop
-        0x00, // 108 HLT
-    };
     var m = load(main);
-    @memcpy(m.memory[0xE0..][0..sub.len], &sub);
-    @memcpy(m.memory[0xF0..][0..fail_and_fill.len], &fail_and_fill);
+    @memcpy(m.memory[sub..][0..subroutine.len], subroutine);
+    @memcpy(m.memory[fail..][0..fail_and_fill.len], fail_and_fill);
     for (0..100_000) |_| m.step();
     try std.testing.expectEqual(State.halted, m.state);
-    try std.testing.expectEqual(0x108, m.pc);
+    try std.testing.expectEqual(end, m.pc);
     return m;
 }
 
 test "the milestone 2 self-test program paints the screen in its pass color" {
-    const m = try runSelfTest(&self_test);
+    const m = try runSelfTest(self_test);
     for (m.memory[screen_start..]) |pixel| try std.testing.expectEqual(pass_color, pixel);
 }
 
 test "the milestone 2 self-test program paints its fail color when a check fails" {
-    var broken = self_test;
+    var broken = self_test[0..self_test.len].*;
     broken[9] = 0x5B;
     const m = try runSelfTest(&broken);
     for (m.memory[screen_start..]) |pixel| try std.testing.expectEqual(fail_color, pixel);
