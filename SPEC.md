@@ -209,7 +209,7 @@ The rest of the I/O page is plain memory. Only `LD` and `ST` give the I/O page i
 
 ### Keys
 
-`KEYS` holds one bit per key, 1 while the key is held. A program that writes `KEYS` keeps the value until the host writes the next frame's keys.
+`KEYS` holds one bit per key, 1 while the key is held. On the page a key is held by its keyboard key or by its button on the console, which works with a mouse or with several fingers at once. A program that writes `KEYS` keeps the value until the host writes the next frame's keys.
 
 | Bit | Key | Page key |
 | --- | --- | --- |
