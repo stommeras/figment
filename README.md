@@ -2,7 +2,7 @@
 
 A console that never existed as hardware. Figment is a made-up 8-bit machine with 16 registers, 32 KB of memory, a 128 by 128 screen with 16 colors, and a beeper. The emulator is written in Zig and compiles to WebAssembly.
 
-[SPEC.md](SPEC.md) defines the machine and lists the milestones. Milestones 1 to 5 are done. The CPU runs every instruction, `figment-asm` assembles programs, the screen shows on a web page and in a terminal, and the page passes keys in, plays the beeper and runs 60 frames a second. Open the page with `?program=demo.bin` for a dot you steer with the arrows.
+[SPEC.md](SPEC.md) defines the machine and lists the milestones. Milestones 1 to 5 are done. The CPU runs every instruction, `figment-asm` assembles programs, the screen shows on a web page and in a terminal, and the page passes keys in, plays the beeper and runs 60 frames a second. Open the page with `?program=demo.bin` for a dot you steer with the arrows, or `?program=rogue.bin` for the first game, a roguelike where you walk with the arrows and take the stairs down to a new random cave.
 
 ## Build
 

@@ -51,8 +51,11 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .imports = &.{.{ .name = "figment", .module = core }},
     });
-    asm_module.addAnonymousImport("self-test.asm", .{ .root_source_file = b.path("programs/self-test.asm") });
-    asm_module.addAnonymousImport("demo.asm", .{ .root_source_file = b.path("programs/demo.asm") });
+    const programs = [_][]const u8{ "self-test", "demo", "rogue" };
+    for (programs) |name| {
+        const source = b.fmt("{s}.asm", .{name});
+        asm_module.addAnonymousImport(source, .{ .root_source_file = b.path(b.fmt("programs/{s}", .{source})) });
+    }
     const asm_exe = b.addExecutable(.{ .name = "figment-asm", .root_module = asm_module });
     b.installArtifact(asm_exe);
     const asm_tests = b.addTest(.{ .root_module = asm_module, .filters = test_filters });
@@ -68,16 +71,17 @@ pub fn build(b: *std.Build) void {
     b.installArtifact(run_exe);
     const run_tests = b.addTest(.{ .root_module = run_module, .filters = test_filters });
 
-    const assemble_self_test = b.addRunArtifact(asm_exe);
-    assemble_self_test.addFileArg(b.path("programs/self-test.asm"));
-    const self_test_bin = assemble_self_test.addOutputFileArg("self-test.bin");
-
     b.installDirectory(.{ .source_dir = b.path("web"), .install_dir = .prefix, .install_subdir = "web" });
     b.getInstallStep().dependOn(&b.addInstallFileWithDir(wasm.getEmittedBin(), .{ .custom = "web" }, "figment.wasm").step);
-    b.getInstallStep().dependOn(&b.addInstallFileWithDir(self_test_bin, .{ .custom = "web" }, "self-test.bin").step);
-    const assemble_demo = b.addRunArtifact(asm_exe);
-    assemble_demo.addFileArg(b.path("programs/demo.asm"));
-    b.getInstallStep().dependOn(&b.addInstallFileWithDir(assemble_demo.addOutputFileArg("demo.bin"), .{ .custom = "web" }, "demo.bin").step);
+    var self_test_bin: std.Build.LazyPath = undefined;
+    for (programs) |name| {
+        const assemble_program = b.addRunArtifact(asm_exe);
+        assemble_program.addFileArg(b.path(b.fmt("programs/{s}.asm", .{name})));
+        const bin_name = b.fmt("{s}.bin", .{name});
+        const bin = assemble_program.addOutputFileArg(bin_name);
+        b.getInstallStep().dependOn(&b.addInstallFileWithDir(bin, .{ .custom = "web" }, bin_name).step);
+        if (std.mem.eql(u8, name, "self-test")) self_test_bin = bin;
+    }
 
     const serve = b.addSystemCommand(&.{ "python3", "-m", "http.server", "-d" });
     serve.addDirectoryArg(.{ .relative = .{ .base = .install_prefix, .sub_path = "web" } });
