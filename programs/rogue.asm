@@ -21,6 +21,7 @@ KEYS_DRAWING = 0x3105           ; the keys held while a new floor was drawn
 BEEP_FRAMES = 0x3106            ; the frames left on the current beep
 PLAYER_HP = 0x3107
 DEAD = 0x3108
+TURN = 0x3109                   ; flips each turn, and the monsters act when it becomes 1
 MONSTER_X = 0x3110
 MONSTER_Y = 0x3114
 MONSTER_HP = 0x3118
@@ -130,6 +131,10 @@ frame:  CALL tick_beep
         LDI r1, 3
         CALL beep
 .monsters:
+        LD r0, [TURN]
+        XOR r0, 1
+        ST r0, [TURN]
+        JZ .done
         CALL run_monsters
         JMP .done
 .stairs:

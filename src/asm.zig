@@ -602,6 +602,7 @@ const rogue = struct {
     const monster_y = rogueConstant("MONSTER_Y");
     const monster_hp = rogueConstant("MONSTER_HP");
     const monsters = rogueConstant("MONSTERS");
+    const turn = rogueConstant("TURN");
     const max_hp = rogueConstant("MAX_HP");
     const wall = rogueConstant("WALL");
     const stairs = rogueConstant("STAIRS");
@@ -645,6 +646,7 @@ fn openRoom(m: *figment.Machine) void {
     };
     m.memory[rogue.player_x] = 2;
     m.memory[rogue.player_y] = 7;
+    m.memory[rogue.turn] = 0;
     removeMonsters(m);
 }
 
@@ -765,9 +767,31 @@ test "rogue attacks a monster by walking into it and kills it in two hits" {
     try press(&m, rogue.right);
     try testing.expectEqual(3, m.memory[rogue.player_x]);
     putMonster(&m, 0, 2, 7, 2);
+    m.memory[rogue.turn] = 0;
     try press(&m, rogue.left);
     try testing.expectEqual(1, m.memory[rogue.monster_hp]);
     try testing.expectEqual(7, m.memory[rogue.player_hp]);
+}
+
+test "rogue monsters act every other turn, so the player can outrun them and strike first" {
+    var diagnostic: Diagnostic = .{};
+    const program = try assemble(testing.allocator, rogue_source, &diagnostic);
+    defer testing.allocator.free(program);
+    var m: figment.Machine = undefined;
+    try startRogue(&m, program);
+    openRoom(&m);
+    putMonster(&m, 0, 8, 7, 2);
+    for ([_]u8{ 7, 7, 6 }, 3..) |monster_x, player_x| {
+        try press(&m, rogue.right);
+        try testing.expectEqual(player_x, m.memory[rogue.player_x]);
+        try testing.expectEqual(monster_x, m.memory[rogue.monster_x]);
+    }
+    try press(&m, rogue.right);
+    try testing.expectEqual(5, m.memory[rogue.player_x]);
+    try testing.expectEqual(1, m.memory[rogue.monster_hp]);
+    try press(&m, rogue.right);
+    try testing.expectEqual(0, m.memory[rogue.monster_hp]);
+    try testing.expectEqual(rogue.max_hp, m.memory[rogue.player_hp]);
 }
 
 test "rogue monsters step toward the player and go around a wall" {
@@ -808,11 +832,8 @@ test "rogue ends the run at 0 HP and starts over on the next arrow" {
     try startRogue(&m, program);
     m.memory[rogue.depth_ones] = 5;
     openRoom(&m);
-    putMonster(&m, 0, 5, 7, 2);
+    putMonster(&m, 0, 4, 7, 2);
     m.memory[rogue.player_hp] = 1;
-    try press(&m, rogue.right);
-    try testing.expectEqual(4, m.memory[rogue.monster_x]);
-    try testing.expectEqual(1, m.memory[rogue.player_hp]);
     try press(&m, rogue.right);
     try testing.expectEqual(0, m.memory[rogue.player_hp]);
     try testing.expectEqual(1, m.memory[rogue.dead]);
