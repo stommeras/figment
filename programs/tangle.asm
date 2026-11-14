@@ -1,14 +1,3 @@
-; Two players steer curving lines around a walled field, and a line that runs into
-; anything stops. Player 1 turns with Left and Right, player 2 with A and B.
-; Start begins a round. The one still moving when the other stops gets a point,
-; and the first to 5 wins the match. Now and then a line leaves a short gap to slip through.
-;
-; Each head keeps its position as 8.8 fixed point, a whole pixel and a fraction,
-; and turns through 32 directions. A head only acts on a step that takes it to a new pixel.
-; It reads that pixel off the screen, so the screen is the only map.
-; A diagonal step also takes the corner pixel on the x side, so every line is 4-connected
-; and two lines can't pass through each other where they cross on a diagonal.
-
 KEYS = 0x3F00
 BEEP = 0x3F01
 RAND = 0x3F02
@@ -16,50 +5,47 @@ FRAME = 0x3F03
 SCREEN = 0x4000
 FIELD = 0x4400                  ; screen row 8, below the status line
 
-; The player being worked on. load_player copies a player here and store_player copies it back.
-; The tangle tests in src/asm.zig read the players at P1 and P2 with these offsets from CUR.
 CUR = 0x3000
-CUR_X_LO = 0x3000
-CUR_X_HI = 0x3001               ; the head's pixel column
-CUR_Y_LO = 0x3002
-CUR_Y_HI = 0x3003               ; the head's pixel row
+CUR_X_FRACTION = 0x3000
+CUR_X = 0x3001
+CUR_Y_FRACTION = 0x3002
+CUR_Y = 0x3003
 CUR_DIR = 0x3004                ; 0 to 31, clockwise from right
-CUR_TURN_WAIT = 0x3005          ; the steps left before a held key turns again
+CUR_TURN_WAIT = 0x3005
 CUR_ALIVE = 0x3006
-CUR_MOVED = 0x3007              ; 1 if this step took the head to a new pixel
+CUR_NEW_PIXEL = 0x3007
 CUR_COLOR = 0x3008
-CUR_LEFT = 0x3009               ; the key that turns left
-CUR_RIGHT = 0x300A
-CUR_OLD_X = 0x300B              ; the pixel the head left on its last move
+CUR_LEFT_KEY = 0x3009
+CUR_RIGHT_KEY = 0x300A
+CUR_OLD_X = 0x300B
 CUR_OLD_Y = 0x300C
-CUR_CORNER_X = 0x300D           ; the corner pixel of that move, or the new head after a straight one
+CUR_CORNER_X = 0x300D
 CUR_CORNER_Y = 0x300E
-CUR_GAP = 0x300F                ; the moves left in the current gap
+CUR_GAP = 0x300F
 CUR_SCORE = 0x3010
 PLAYER_BYTES = 17
-P1 = 0x3020                     ; P1 and P2 share the page of CUR, so copies change only low bytes
+P1 = 0x3020
 P2 = 0x3040
 
 STATE = 0x3060
-KEYS_BEFORE = 0x3061            ; the keys held last frame
-PAUSE = 0x3062                  ; the frames left before the next round
-GAP_ODDS = 0x3063               ; a gap starts on a move when a random byte is below this
-BEEP_FRAMES = 0x3064            ; the frames left on the current beep
+KEYS_BEFORE = 0x3061
+PAUSE = 0x3062
+GAP_ODDS = 0x3063
+BEEP_FRAMES = 0x3064
 
-READY = 0                       ; the states
-PLAYING = 1
-OVER = 2
-MATCH_OVER = 3
+STATE_READY = 0
+STATE_PLAYING = 1
+STATE_OVER = 2
+STATE_MATCH_OVER = 3
 
-STEPS = 1                       ; the moves each frame. Each moves under half a pixel
-TURN_STEPS = 2                  ; the steps between turns while a key is held. At 1, a head
-                                ; could wobble back onto the pixel it just left and stop
+STEPS = 1
+TURN_STEPS = 2
 PAUSE_FRAMES = 60
 WIN_SCORE = 5
 GAP_CHANCE = 4                  ; out of 256 moves
 GAP_MOVES = 4
 
-BLANK = 10                      ; the glyphs after the digits
+BLANK = 10
 BAR = 11
 
 LEFT = 0b0000_0100
@@ -83,24 +69,19 @@ main:   LDI r0, GAP_CHANCE
         CALL new_match
 
 frame:  CALL tick_beep
-        LD rC, [KEYS]           ; rC = the keys held
-        LD r0, [KEYS_BEFORE]
-        ST rC, [KEYS_BEFORE]
-        XOR r0, 0xFF
-        MOV rD, rC              ; rD = the keys pressed this frame and not the last
-        AND rD, r0
+        CALL read_keys
         LD r0, [STATE]
-        CMP r0, PLAYING
+        CMP r0, STATE_PLAYING
         JZ .play
-        CMP r0, OVER
+        CMP r0, STATE_OVER
         JZ .over
         AND rD, START
         JZ .done
-        CMP r0, MATCH_OVER
+        CMP r0, STATE_MATCH_OVER
         JNZ .go
         CALL new_match
         JMP .done
-.go:    LDI r0, PLAYING
+.go:    LDI r0, STATE_PLAYING
         ST r0, [STATE]
         JMP .done
 .over:  LD r0, [PAUSE]
@@ -114,12 +95,22 @@ frame:  CALL tick_beep
         CALL step
         POP r0
         LD r1, [STATE]
-        CMP r1, PLAYING
+        CMP r1, STATE_PLAYING
         JNZ .done
         SUB r0, 1
         JNZ .step
 .done:  ST r0, [FRAME]
         JMP frame
+
+; rC = the keys held, and rD = the keys pressed this frame and not the last. Uses r0.
+read_keys:
+        LD rC, [KEYS]
+        LD r0, [KEYS_BEFORE]
+        ST rC, [KEYS_BEFORE]
+        XOR r0, 0xFF
+        MOV rD, rC
+        AND rD, r0
+        RET
 
 new_match:
         LDI rB, lo(P1)
@@ -137,14 +128,12 @@ new_match:
 ; Gives player rB color r1, left key r2, right key r3 and no points.
 setup:  CALL load_player
         ST r1, [CUR_COLOR]
-        ST r2, [CUR_LEFT]
-        ST r3, [CUR_RIGHT]
+        ST r2, [CUR_LEFT_KEY]
+        ST r3, [CUR_RIGHT_KEY]
         LDI r0, 0
         ST r0, [CUR_SCORE]
         JMP store_player
 
-; Clears the field and puts both heads on it, at least 16 pixels from the border
-; and, in one direction or the other, from each other.
 new_round:
         CALL clear_field
         CALL random_spot
@@ -153,21 +142,25 @@ new_round:
         LDI rB, lo(P1)
         CALL place
 .again: CALL random_spot
-        MOV r0, r1              ; far enough if x or y differs by 16 or more
-        SUB r0, r3
-        ADD r0, 15
-        CMP r0, 31
+        MOV r0, r1
+        MOV r5, r3
+        CALL close
         JNC .far
         MOV r0, r2
-        SUB r0, r4
-        ADD r0, 15
-        CMP r0, 31
+        MOV r5, r4
+        CALL close
         JC .again
 .far:   LDI rB, lo(P2)
         CALL place
-        LDI r0, READY
+        LDI r0, STATE_READY
         ST r0, [STATE]
         JMP draw_status
+
+; Sets C if r0 and r5 differ by less than 16.
+close:  SUB r0, r5
+        ADD r0, 15
+        CMP r0, 31
+        RET
 
 ; r1 = a random column from 32 to 95 and r2 = a random row from 36 to 99.
 random_spot:
@@ -181,21 +174,21 @@ random_spot:
 
 ; Puts player rB's head at r1, r2, facing a random way, and draws it. Keeps r3 and r4.
 place:  CALL load_player
-        ST r1, [CUR_X_HI]
-        ST r2, [CUR_Y_HI]
+        ST r1, [CUR_X]
+        ST r2, [CUR_Y]
         ST r1, [CUR_OLD_X]
         ST r2, [CUR_OLD_Y]
         ST r1, [CUR_CORNER_X]
         ST r2, [CUR_CORNER_Y]
         LDI r0, 0x80
-        ST r0, [CUR_X_LO]
-        ST r0, [CUR_Y_LO]
+        ST r0, [CUR_X_FRACTION]
+        ST r0, [CUR_Y_FRACTION]
         LD r0, [RAND]
         AND r0, 31
         ST r0, [CUR_DIR]
         LDI r0, 0
         ST r0, [CUR_TURN_WAIT]
-        ST r0, [CUR_MOVED]
+        ST r0, [CUR_NEW_PIXEL]
         ST r0, [CUR_GAP]
         LDI r0, 1
         ST r0, [CUR_ALIVE]
@@ -204,7 +197,6 @@ place:  CALL load_player
         ST r0, [r5:r6]
         JMP store_player
 
-; Moves both heads, then draws them, so neither sees the other's pixels from the same step.
 step:   LDI rB, lo(P1)
         CALL move
         LDI rB, lo(P2)
@@ -215,7 +207,7 @@ step:   LDI rB, lo(P1)
         LDI rB, lo(P2)
         CALL draw_head
 
-; Ends the round if a head stopped, and gives the other a point if it didn't.
+end_round_if_stopped:
         LDI rB, lo(P1)
         CALL load_player
         LD r1, [CUR_ALIVE]
@@ -225,7 +217,7 @@ step:   LDI rB, lo(P1)
         MOV r0, r1
         AND r0, r2
         JNZ .end
-        LDI r0, OVER
+        LDI r0, STATE_OVER
         ST r0, [STATE]
         LDI r0, PAUSE_FRAMES
         ST r0, [PAUSE]
@@ -247,7 +239,7 @@ step:   LDI rB, lo(P1)
         CMP r1, WIN_SCORE
         LDI r1, 10
         JNZ .beep
-        LDI r0, MATCH_OVER
+        LDI r0, STATE_MATCH_OVER
         ST r0, [STATE]
         LDI r0, NOTE_WIN
         LDI r1, 40
@@ -259,15 +251,15 @@ step:   LDI rB, lo(P1)
 ; Keeps rB to rD.
 move:   CALL load_player
         LDI r0, 0
-        ST r0, [CUR_MOVED]
+        ST r0, [CUR_NEW_PIXEL]
         LD r0, [CUR_ALIVE]
         CMP r0, 0
         JZ store_player
-        LD r1, [CUR_LEFT]
+        LD r1, [CUR_LEFT_KEY]
         AND r1, rC
-        LD r2, [CUR_RIGHT]
+        LD r2, [CUR_RIGHT_KEY]
         AND r2, rC
-        CMP r1, 0               ; no turn unless exactly one of the two keys is held
+        CMP r1, 0
         JZ .right_only
         CMP r2, 0
         JNZ .no_turn
@@ -297,32 +289,24 @@ move:   CALL load_player
         LDI r0, 0
         ST r0, [CUR_TURN_WAIT]
 
-.go:    LD r0, [CUR_DIR]        ; r3 = sin and r4 = cos of the direction
-        LDI r5, hi(sine)
-        LDI r6, lo(sine)
-        ADD r6, r0
-        ADC r5, 0
-        LD r3, [r5:r6]
-        ADD r6, 8
-        ADC r5, 0
-        LD r4, [r5:r6]
-        LD r1, [CUR_X_HI]       ; r1, r2 = the head before the move
-        LD r2, [CUR_Y_HI]
-        LDI r7, hi(CUR_X_LO)
-        LDI r8, lo(CUR_X_LO)
+.go:    CALL direction
+        LD r1, [CUR_X]
+        LD r2, [CUR_Y]
+        LDI r7, hi(CUR_X_FRACTION)
+        LDI r8, lo(CUR_X_FRACTION)
         CALL add_signed
-        LDI r8, lo(CUR_Y_LO)
+        LDI r8, lo(CUR_Y_FRACTION)
         MOV r4, r3
         CALL add_signed
-        LD r3, [CUR_X_HI]       ; r3, r4 = the head after it
-        LD r4, [CUR_Y_HI]
+        LD r3, [CUR_X]
+        LD r4, [CUR_Y]
         CMP r1, r3
         JNZ .new
         CMP r2, r4
         JZ store_player
 
 .new:   LDI r0, 1
-        ST r0, [CUR_MOVED]
+        ST r0, [CUR_NEW_PIXEL]
         ST r1, [CUR_OLD_X]
         ST r2, [CUR_OLD_Y]
         ST r3, [CUR_CORNER_X]
@@ -331,7 +315,8 @@ move:   CALL load_player
         JZ .check
         CMP r2, r4
         JZ .check
-        ST r2, [CUR_CORNER_Y]   ; a diagonal step, so the corner is the new column on the old row
+.diagonal:
+        ST r2, [CUR_CORNER_Y]
 .check: LD r1, [CUR_CORNER_X]
         LD r2, [CUR_CORNER_Y]
         CALL blocked
@@ -344,7 +329,6 @@ move:   CALL load_player
         ST r0, [CUR_ALIVE]
         JMP store_player
 
-; Stops both heads if their new pixels overlap, since neither has drawn them yet.
 meet:   LDI rB, lo(P1)
         CALL targets
         JZ .end
@@ -383,10 +367,10 @@ targets:
         CALL load_player
         LD r1, [CUR_CORNER_X]
         LD r2, [CUR_CORNER_Y]
-        LD r3, [CUR_X_HI]
-        LD r4, [CUR_Y_HI]
+        LD r3, [CUR_X]
+        LD r4, [CUR_Y]
         LD r0, [CUR_ALIVE]
-        LD r5, [CUR_MOVED]
+        LD r5, [CUR_NEW_PIXEL]
         AND r0, r5
         RET
 
@@ -396,12 +380,25 @@ stop:   CALL load_player
         ST r0, [CUR_ALIVE]
         JMP store_player
 
+; r3 = sin and r4 = cos of the current player's direction. Uses r0, r5 and r6.
+direction:
+        LD r0, [CUR_DIR]
+        LDI r5, hi(sine)
+        LDI r6, lo(sine)
+        ADD r6, r0
+        ADC r5, 0
+        LD r3, [r5:r6]
+        ADD r6, 8
+        ADC r5, 0
+        LD r4, [r5:r6]
+        RET
+
 ; Adds the signed byte r4 to the 8.8 number at r7:r8, low byte first. Keeps r1 to r4.
 ; Uses r0, r6 and r9.
 add_signed:
-        MOV r9, r8              ; r7:r9 = the high byte, set up before ADD sets the carry
+        MOV r9, r8
         ADD r9, 1
-        LDI r6, 0               ; r6 = r4's sign spread over a byte
+        LDI r6, 0
         MOV r0, r4
         AND r0, 0x80
         JZ .add
@@ -421,12 +418,11 @@ blocked:
         CMP r0, NAVY
         RET
 
-; Draws the new pixels of player rB if it moved this step. In a gap it draws only the head
-; and erases the pixel behind, which no other head can be on. Keeps rB to rD.
+; Draws the new pixels of player rB if it moved this step. Keeps rB to rD.
 draw_head:
         CALL load_player
         LD r0, [CUR_ALIVE]
-        LD r1, [CUR_MOVED]
+        LD r1, [CUR_NEW_PIXEL]
         AND r0, r1
         JZ store_player
         LD r0, [CUR_GAP]
@@ -453,8 +449,8 @@ draw_head:
         CALL pixel_address
         ST r0, [r5:r6]
 .head:  LD r0, [CUR_COLOR]
-        LD r1, [CUR_X_HI]
-        LD r2, [CUR_Y_HI]
+        LD r1, [CUR_X]
+        LD r2, [CUR_Y]
         CALL pixel_address
         ST r0, [r5:r6]
         JMP store_player
@@ -474,8 +470,6 @@ tick_beep:
         ST r0, [BEEP]
 .end:   RET
 
-; Draws each player's score in its color at either end of the status line,
-; and between them a bar in the winner's color once the match is over.
 draw_status:
         LDI rB, lo(P1)
         LDI r7, 0
@@ -484,9 +478,11 @@ draw_status:
         LDI r7, 15
         CALL draw_score
         LD r0, [STATE]
-        CMP r0, MATCH_OVER
+        CMP r0, STATE_MATCH_OVER
         JNZ .blank
-        LD r0, [CUR_SCORE]      ; CUR holds player 2
+        LDI rB, lo(P2)
+        CALL load_player
+        LD r0, [CUR_SCORE]
         CMP r0, WIN_SCORE
         JZ .won
         LDI rB, lo(P1)
@@ -512,17 +508,16 @@ draw_score:
 
 ; Draws glyph r0 in color r1 on black at screen tile r7, r8.
 ; Keeps r0, r1, r4, r7, r8, rC and rD. Uses r2, r3, r5, r6 and r9 to rB.
-; This is the drawing loop from rogue.asm, kept unrolled.
 draw_tile:
         LDI r2, BLACK
-        MOV rA, r0              ; r9:rA = glyphs + r0 * 8
+        MOV rA, r0
         SHL rA
         SHL rA
         SHL rA
         LDI r9, hi(glyphs)
         ADD rA, lo(glyphs)
         ADC r9, 0
-        MOV r5, r8              ; r5:r6 = SCREEN + r8 * 1024 + r7 * 8
+        MOV r5, r8
         SHL r5
         SHL r5
         ADD r5, hi(SCREEN)
@@ -591,7 +586,7 @@ draw_tile:
         ADD r6, 1
         ST r2, [r5:r6]
         ADD r6, 1
-.next:  SUB r6, 8               ; back to the row start, then down a row
+.next:  SUB r6, 8
         ADD r6, 128
         ADC r5, 0
         ADD rA, 1
@@ -623,7 +618,6 @@ copy_player:
         JNZ .next
         RET
 
-; Fills the field with navy inside a gray border.
 clear_field:
         LDI r5, hi(FIELD)
         LDI r6, 0

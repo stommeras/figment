@@ -583,7 +583,6 @@ fn runFrame(m: *figment.Machine) !usize {
 
 const rogue_source = @embedFile("rogue.asm");
 
-/// The value of a constant that a program defines, such as `PLAYER_X = 0x3100`.
 fn constant(comptime source: []const u8, comptime name: []const u8) usize {
     @setEvalBranchQuota(100_000);
     const start = std.mem.find(u8, source, "\n" ++ name ++ " = ").? + name.len + 4;
@@ -1006,10 +1005,10 @@ const tangle_source = @embedFile("tangle.asm");
 const tangle = struct {
     const players = [2]usize{ constant(tangle_source, "P1"), constant(tangle_source, "P2") };
     const state = constant(tangle_source, "STATE");
-    const playing = constant(tangle_source, "PLAYING");
-    const over = constant(tangle_source, "OVER");
-    const ready = constant(tangle_source, "READY");
-    const match_over = constant(tangle_source, "MATCH_OVER");
+    const playing = constant(tangle_source, "STATE_PLAYING");
+    const over = constant(tangle_source, "STATE_OVER");
+    const ready = constant(tangle_source, "STATE_READY");
+    const match_over = constant(tangle_source, "STATE_MATCH_OVER");
     const pause_frames = constant(tangle_source, "PAUSE_FRAMES");
     const win_score = constant(tangle_source, "WIN_SCORE");
     const gap_odds = constant(tangle_source, "GAP_ODDS");
@@ -1025,7 +1024,6 @@ const tangle = struct {
     const right = constant(tangle_source, "RIGHT");
 };
 
-/// Player `p`'s copy of the CUR field `name`, such as `CUR_X_HI`.
 fn tangleField(m: *figment.Machine, p: usize, comptime name: []const u8) *u8 {
     return &m.memory[tangle.players[p] + constant(tangle_source, name) - constant(tangle_source, "CUR")];
 }
@@ -1043,23 +1041,21 @@ fn startTangle(m: *figment.Machine, seed: u64) !void {
     _ = try runFrame(m);
 }
 
-/// Repaints the field empty, as a new round leaves it, without the heads.
 fn emptyField(m: *figment.Machine) void {
     for (8..128) |y| for (0..128) |x| {
         screenPixel(m, x, y).* = if (x == 0 or x == 127 or y == 8 or y == 127) tangle.gray else tangle.navy;
     };
 }
 
-/// Puts player `p`'s head in the middle of pixel x, y, facing `dir`, as a new round would.
 fn putHead(m: *figment.Machine, p: usize, x: u8, y: u8, dir: u8) void {
-    tangleField(m, p, "CUR_X_LO").* = 0x80;
-    tangleField(m, p, "CUR_X_HI").* = x;
-    tangleField(m, p, "CUR_Y_LO").* = 0x80;
-    tangleField(m, p, "CUR_Y_HI").* = y;
+    tangleField(m, p, "CUR_X_FRACTION").* = 0x80;
+    tangleField(m, p, "CUR_X").* = x;
+    tangleField(m, p, "CUR_Y_FRACTION").* = 0x80;
+    tangleField(m, p, "CUR_Y").* = y;
     tangleField(m, p, "CUR_DIR").* = dir;
     tangleField(m, p, "CUR_TURN_WAIT").* = 0;
     tangleField(m, p, "CUR_ALIVE").* = 1;
-    tangleField(m, p, "CUR_MOVED").* = 0;
+    tangleField(m, p, "CUR_NEW_PIXEL").* = 0;
     tangleField(m, p, "CUR_GAP").* = 0;
     inline for (.{ "OLD", "CORNER" }) |name| {
         tangleField(m, p, "CUR_" ++ name ++ "_X").* = x;
@@ -1068,8 +1064,6 @@ fn putHead(m: *figment.Machine, p: usize, x: u8, y: u8, dir: u8) void {
     screenPixel(m, x, y).* = tangleField(m, p, "CUR_COLOR").*;
 }
 
-/// An empty field with player 1 at x, y facing `dir`, player 2 out of the way
-/// near the bottom left heading right, and no gaps.
 fn tangleRound(m: *figment.Machine, x: u8, y: u8, dir: u8) !void {
     try startTangle(m, 0);
     m.memory[tangle.gap_odds] = 0;
@@ -1107,8 +1101,8 @@ test "tangle starts each round on an empty field with the heads apart, waiting f
         try testing.expectEqual(tangle.ready, m.memory[tangle.state]);
         var heads: [2][2]usize = undefined;
         for (0..2) |p| {
-            const x = tangleField(&m, p, "CUR_X_HI").*;
-            const y = tangleField(&m, p, "CUR_Y_HI").*;
+            const x = tangleField(&m, p, "CUR_X").*;
+            const y = tangleField(&m, p, "CUR_Y").*;
             try testing.expect(x >= 16 and x <= 127 - 16 and y >= 8 + 16 and y <= 127 - 16);
             try testing.expectEqual(1, tangleField(&m, p, "CUR_ALIVE").*);
             try testing.expectEqual(tangleField(&m, p, "CUR_COLOR").*, screenPixel(&m, x, y).*);
@@ -1123,9 +1117,8 @@ test "tangle starts each round on an empty field with the heads apart, waiting f
             const border = x == 0 or x == 127 or y == 8 or y == 127;
             try testing.expectEqual(if (border) tangle.gray else tangle.navy, screenPixel(&m, x, y).*);
         };
-        // Nothing moves until Start.
         try runFrames(&m, tangle.left | tangle.right, 30);
-        try testing.expectEqual(heads[0][0], tangleField(&m, 0, "CUR_X_HI").*);
+        try testing.expectEqual(heads[0][0], tangleField(&m, 0, "CUR_X").*);
         try testing.expectEqual(tangle.ready, m.memory[tangle.state]);
     }
 }
@@ -1136,11 +1129,15 @@ test "tangle moves a head under half a pixel a step and leaves an unbroken line"
     const frames = 64;
     try runFrames(&m, 0, frames);
     const x = 40 + (0x80 + 127 * tangle.steps * frames) / 256;
-    try testing.expectEqual(x, tangleField(&m, 0, "CUR_X_HI").*);
-    try testing.expectEqual(60, tangleField(&m, 0, "CUR_Y_HI").*);
+    try testing.expectEqual(x, tangleField(&m, 0, "CUR_X").*);
+    try testing.expectEqual(60, tangleField(&m, 0, "CUR_Y").*);
     for (40..x + 1) |column| try testing.expectEqual(tangle.yellow, screenPixel(&m, column, 60).*);
     try testing.expectEqual(tangle.navy, screenPixel(&m, x + 1, 60).*);
     try testing.expectEqual(tangle.navy, screenPixel(&m, 39, 60).*);
+}
+
+test "tangle turns at most every second step, so a head can't wobble back onto the pixel it left" {
+    try testing.expect(tangle.turn_steps >= 2);
 }
 
 test "tangle turns a held key once every TURN_STEPS steps, and not with both held" {
@@ -1172,14 +1169,13 @@ test "tangle stops a head that runs into the border or a taken pixel, then start
     screenPixel(&m, 50, 60).* = tangle.blue;
     try runFrames(&m, 0, 40);
     try testing.expectEqual(0, tangleField(&m, 0, "CUR_ALIVE").*);
-    try testing.expectEqual(50, tangleField(&m, 0, "CUR_X_HI").*);
+    try testing.expectEqual(50, tangleField(&m, 0, "CUR_X").*);
     try testing.expectEqual(tangle.blue, screenPixel(&m, 50, 60).*);
     try testing.expectEqual(tangle.yellow, screenPixel(&m, 49, 60).*);
 }
 
 test "tangle stops a head that meets a line on the diagonal instead of slipping through" {
     var m: figment.Machine = undefined;
-    // A line the other way across the head's path, with pixels touching only at corners.
     try tangleRound(&m, 40, 40, 4);
     for (30..71) |y| screenPixel(&m, 101 - y, y).* = tangle.blue;
     try runFrames(&m, 0, 60);
@@ -1190,13 +1186,12 @@ test "tangle stops a head that meets a line on the diagonal instead of slipping 
 
 test "tangle stops both heads when they reach the same pixel in the same step" {
     var m: figment.Machine = undefined;
-    // Both heads 20 pixels from pixel 60, 60, one from the left and one from the right.
     try tangleRound(&m, 40, 60, 0);
     putHead(&m, 1, 80, 60, 16);
     try runFrames(&m, 0, 60);
     for (0..2) |p| try testing.expectEqual(0, tangleField(&m, p, "CUR_ALIVE").*);
-    try testing.expectEqual(60, tangleField(&m, 0, "CUR_X_HI").*);
-    try testing.expectEqual(60, tangleField(&m, 1, "CUR_X_HI").*);
+    try testing.expectEqual(60, tangleField(&m, 0, "CUR_X").*);
+    try testing.expectEqual(60, tangleField(&m, 1, "CUR_X").*);
     try testing.expectEqual(tangle.navy, screenPixel(&m, 60, 60).*);
     try testing.expectEqual(tangle.over, m.memory[tangle.state]);
 }
@@ -1210,11 +1205,10 @@ test "tangle keeps heads in the field and lines 4-connected through many rounds"
     var gap_before: [2]u8 = undefined;
     var matches: usize = 0;
     for (0..20_000) |i| {
-        // Change the held keys every 8 frames, so turns are held for a while.
         if (i % 8 == 0) m.memory[figment.keys] = r.random().int(u8);
         const state_before = m.memory[tangle.state];
         for (0..2) |p| {
-            before[p] = .{ tangleField(&m, p, "CUR_X_HI").*, tangleField(&m, p, "CUR_Y_HI").* };
+            before[p] = .{ tangleField(&m, p, "CUR_X").*, tangleField(&m, p, "CUR_Y").* };
             gap_before[p] = tangleField(&m, p, "CUR_GAP").*;
         }
         _ = try runFrame(&m);
@@ -1224,21 +1218,19 @@ test "tangle keeps heads in the field and lines 4-connected through many rounds"
         for (0..2) |p| try testing.expect(tangleField(&m, p, "CUR_SCORE").* <= tangle.win_score);
         if (state_before != tangle.playing) continue;
         for (0..2) |p| {
-            const x = tangleField(&m, p, "CUR_X_HI").*;
-            const y = tangleField(&m, p, "CUR_Y_HI").*;
+            const x = tangleField(&m, p, "CUR_X").*;
+            const y = tangleField(&m, p, "CUR_Y").*;
             try testing.expect(x < 128 and y >= 8 and y < 128);
             try testing.expect(@max(x, before[p][0]) - @min(x, before[p][0]) <= tangle.steps);
             try testing.expect(@max(y, before[p][1]) - @min(y, before[p][1]) <= tangle.steps);
             if (tangleField(&m, p, "CUR_ALIVE").* == 0) continue;
             try testing.expectEqual(tangleField(&m, p, "CUR_COLOR").*, screenPixel(&m, x, y).*);
-            if (tangleField(&m, p, "CUR_MOVED").* == 0) continue;
+            if (tangleField(&m, p, "CUR_NEW_PIXEL").* == 0) continue;
             const old_x = tangleField(&m, p, "CUR_OLD_X").*;
             const old_y = tangleField(&m, p, "CUR_OLD_Y").*;
             const corner_x = tangleField(&m, p, "CUR_CORNER_X").*;
             const corner_y = tangleField(&m, p, "CUR_CORNER_Y").*;
-            // The corner touches both the old head and the new one along an edge, or is the new one.
-            try testing.expect(corner_x == x and (corner_y == old_y or corner_y == y));
-            try testing.expect(old_x == x or old_y == y or corner_y == old_y);
+            try expectCornerJoins(.{ old_x, old_y }, .{ corner_x, corner_y }, .{ x, y });
             if (gap_before[p] > 0) continue;
             try testing.expectEqual(tangleField(&m, p, "CUR_COLOR").*, screenPixel(&m, corner_x, corner_y).*);
         }
@@ -1247,27 +1239,34 @@ test "tangle keeps heads in the field and lines 4-connected through many rounds"
     try testing.expect(matches >= 2);
 }
 
+fn expectCornerJoins(old: [2]u8, corner: [2]u8, new: [2]u8) !void {
+    try testing.expect(corner[0] == new[0] and (corner[1] == old[1] or corner[1] == new[1]));
+    try testing.expect(old[0] == new[0] or old[1] == new[1] or corner[1] == old[1]);
+}
+
 test "tangle leaves a gap of GAP_MOVES pixels, then goes on drawing" {
     var m: figment.Machine = undefined;
     try tangleRound(&m, 40, 60, 0);
     tangleField(&m, 0, "CUR_GAP").* = tangle.gap_moves;
     try runFrames(&m, 0, 40);
-    const x = tangleField(&m, 0, "CUR_X_HI").*;
+    const x = tangleField(&m, 0, "CUR_X").*;
     try testing.expect(x > 40 + tangle.gap_moves + 4);
     for (40..x + 1) |column| {
         const color = if (column < 40 + tangle.gap_moves) tangle.navy else tangle.yellow;
         try testing.expectEqual(color, screenPixel(&m, column, 60).*);
     }
-    // Player 2 drives through the gap.
+}
+
+test "tangle lets the other line through a gap" {
+    var m: figment.Machine = undefined;
     try tangleRound(&m, 40, 60, 0);
     tangleField(&m, 0, "CUR_GAP").* = tangle.gap_moves;
     putHead(&m, 1, 41, 50, 8);
     try runFrames(&m, 0, 40);
     try testing.expectEqual(1, tangleField(&m, 1, "CUR_ALIVE").*);
-    try testing.expect(tangleField(&m, 1, "CUR_Y_HI").* > 62);
+    try testing.expect(tangleField(&m, 1, "CUR_Y").* > 62);
 }
 
-/// Runs frames until the round ends.
 fn runRound(m: *figment.Machine) !void {
     for (0..1000) |_| {
         _ = try runFrame(m);
@@ -1276,7 +1275,6 @@ fn runRound(m: *figment.Machine) !void {
     return error.RoundNeverEnded;
 }
 
-/// Whether status tile `t` has a pixel in `color`.
 fn statusTileHas(m: *figment.Machine, t: usize, color: usize) bool {
     for (0..8) |y| for (0..8) |x| {
         if (screenPixel(m, t * 8 + x, y).* == color) return true;
@@ -1309,7 +1307,6 @@ test "tangle ends the match at WIN_SCORE with a bar in the winner's color, and S
     try testing.expectEqual(tangle.win_score, tangleField(&m, 1, "CUR_SCORE").*);
     try testing.expectEqual(tangle.match_over, m.memory[tangle.state]);
     for (2..14) |t| try testing.expect(statusTileHas(&m, t, tangle.blue));
-    // No new round comes by itself.
     try runFrames(&m, 0, tangle.pause_frames * 2);
     try testing.expectEqual(tangle.match_over, m.memory[tangle.state]);
     try runFrames(&m, tangle.start, 1);
