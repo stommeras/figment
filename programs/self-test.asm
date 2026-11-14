@@ -26,6 +26,15 @@
         OR r7, r8
         CMP r7, 0xFF
         JNZ fail
+        LD r9, [0x3F02]
+        LDI rA, 8
+draw:   LD rB, [0x3F02]
+        CMP rB, r9
+        JNZ drawn
+        SUB rA, 1
+        JNZ draw
+        JMP fail
+drawn:  ST r9, [0x3F03]
         LDI r0, 0x0B
         JMP fill
 

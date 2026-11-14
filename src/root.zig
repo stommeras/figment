@@ -5,6 +5,10 @@ pub const memory_size = 0x8000;
 pub const stack_start = 0x3F00;
 pub const screen_start = 0x4000;
 pub const screen_size = 128;
+pub const keys = 0x3F00;
+pub const beep = 0x3F01;
+pub const rand = 0x3F02;
+pub const frame = 0x3F03;
 
 pub const palette = [16][3]u8{
     .{ 0x00, 0x00, 0x00 }, .{ 0x1D, 0x23, 0x40 }, .{ 0x5A, 0x2A, 0x5E }, .{ 0x1F, 0x6B, 0x52 },
@@ -31,10 +35,12 @@ pub const Machine = struct {
     z: u1 = 0,
     c: u1 = 0,
     state: State = .running,
+    rng: std.Random.Xoshiro256,
+    frame_ended: bool = false,
 
-    pub fn reset(self: *Machine) void {
+    pub fn reset(self: *Machine, seed: u64) void {
         // Zeroing memory with @memset keeps a 32 KB block of zeros out of the wasm module.
-        self.* = .{ .memory = undefined };
+        self.* = .{ .memory = undefined, .rng = .init(seed) };
         @memset(&self.memory, 0);
     }
 
@@ -79,19 +85,19 @@ pub const Machine = struct {
             },
             0x50 => {
                 self.pc +%= 4;
-                self.r[a] = self.memory[address(op3, op2)];
+                self.r[a] = self.load(address(op3, op2));
             },
             0x51 => {
                 self.pc +%= 4;
-                self.memory[address(op3, op2)] = self.r[a];
+                self.store(address(op3, op2), self.r[a]);
             },
             0x52 => {
                 self.pc +%= 3;
-                self.r[a] = self.memory[address(self.r[h], self.r[l])];
+                self.r[a] = self.load(address(self.r[h], self.r[l]));
             },
             0x53 => {
                 self.pc +%= 3;
-                self.memory[address(self.r[h], self.r[l])] = self.r[a];
+                self.store(address(self.r[h], self.r[l]), self.r[a]);
             },
             0x60...0x64 => {
                 self.pc +%= 3;
@@ -156,6 +162,16 @@ pub const Machine = struct {
         self.c = carry;
     }
 
+    fn load(self: *Machine, addr: u15) u8 {
+        if (addr == rand) return @truncate(self.rng.next() >> 56);
+        return self.memory[addr];
+    }
+
+    fn store(self: *Machine, addr: u15, value: u8) void {
+        self.memory[addr] = value;
+        if (addr == frame) self.frame_ended = true;
+    }
+
     fn push(self: *Machine, value: u8) void {
         self.sp -%= 1;
         self.memory[self.sp] = value;
@@ -169,7 +185,7 @@ pub const Machine = struct {
 };
 
 test "reset gives the state SPEC.md describes" {
-    var m: Machine = .{};
+    var m: Machine = .{ .rng = .init(5) };
     m.memory[0x1234] = 0xAB;
     m.r[3] = 7;
     m.pc = 0x100;
@@ -178,7 +194,7 @@ test "reset gives the state SPEC.md describes" {
     m.c = 1;
     m.state = .faulted;
 
-    m.reset();
+    m.reset(0);
 
     try std.testing.expectEqual(@as(usize, 0), std.mem.count(u8, &m.memory, &.{0xAB}));
     try std.testing.expectEqual(@as([16]u8, @splat(0)), m.r);
@@ -195,7 +211,7 @@ test "a u15 address covers memory exactly" {
 
 fn load(program: []const u8) Machine {
     var m: Machine = undefined;
-    m.reset();
+    m.reset(0);
     @memcpy(m.memory[0..program.len], program);
     return m;
 }
@@ -686,4 +702,62 @@ test "LD with an address at the top of memory reads its high byte from 0x0000" {
     m.step();
     try std.testing.expectEqual(0x77, m.r[1]);
     try std.testing.expectEqual(1, m.pc);
+}
+
+test "LD from RAND gives the xoshiro256++ bytes SPEC.md lists for seed 0" {
+    var m = load(&.{ 0x50, 0x10, 0x02, 0x3F, 0x52, 0x20, 0x34, 0x50, 0x30, 0x02, 0xBF, 0x00 });
+    m.r[3] = 0x3F;
+    m.r[4] = 0x02;
+    try run(&m);
+    try std.testing.expectEqual(0x53, m.r[1]);
+    try std.testing.expectEqual(0x61, m.r[2]);
+    try std.testing.expectEqual(0x5C, m.r[3]);
+}
+
+test "the seed picks the random sequence" {
+    var m: Machine = undefined;
+    m.reset(1);
+    @memcpy(m.memory[0..5], &[_]u8{ 0x50, 0x10, 0x02, 0x3F, 0x00 });
+    try run(&m);
+    try std.testing.expectEqual(0xCF, m.r[1]);
+}
+
+test "reads other than LD see RAND as plain memory, and ST stores there" {
+    var m = load(&.{ 0x10, 0x10, 0x99, 0x51, 0x10, 0x02, 0x3F, 0x50, 0x20, 0x02, 0x3F, 0x00 });
+    try run(&m);
+    try std.testing.expectEqual(0x53, m.r[2]);
+    try std.testing.expectEqual(0x99, m.memory[0x3F02]);
+    m.state = .running;
+    m.sp = 0x3F02;
+    m.memory[m.pc] = 0x73;
+    m.memory[m.pc +% 1] = 0x30;
+    m.step();
+    try std.testing.expectEqual(0x99, m.r[3]);
+    m.pc = 0x3F02;
+    m.step();
+    try std.testing.expectEqual(State.faulted, m.state);
+}
+
+test "ST to FRAME ends the frame with either address form, and stores the byte" {
+    var m = load(&.{ 0x10, 0x10, 0x07, 0x51, 0x10, 0x03, 0x3F, 0x00 });
+    m.step();
+    try std.testing.expect(!m.frame_ended);
+    m.step();
+    try std.testing.expect(m.frame_ended);
+    try std.testing.expectEqual(0x07, m.memory[0x3F03]);
+    try std.testing.expectEqual(7, m.pc);
+
+    m = load(&.{ 0x53, 0x12, 0x34, 0x00 });
+    m.r[3] = 0xBF;
+    m.r[4] = 0x03;
+    m.step();
+    try std.testing.expect(m.frame_ended);
+}
+
+test "PUSH and CALL into FRAME do not end the frame" {
+    var m = load(&.{ 0x72, 0x10, 0x70, 0x00, 0x10 });
+    m.sp = 0x3F04;
+    m.step();
+    m.step();
+    try std.testing.expect(!m.frame_ended);
 }

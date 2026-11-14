@@ -52,6 +52,7 @@ pub fn build(b: *std.Build) void {
         .imports = &.{.{ .name = "figment", .module = core }},
     });
     asm_module.addAnonymousImport("self-test.asm", .{ .root_source_file = b.path("programs/self-test.asm") });
+    asm_module.addAnonymousImport("demo.asm", .{ .root_source_file = b.path("programs/demo.asm") });
     const asm_exe = b.addExecutable(.{ .name = "figment-asm", .root_module = asm_module });
     b.installArtifact(asm_exe);
     const asm_tests = b.addTest(.{ .root_module = asm_module, .filters = test_filters });
@@ -74,6 +75,9 @@ pub fn build(b: *std.Build) void {
     b.installDirectory(.{ .source_dir = b.path("web"), .install_dir = .prefix, .install_subdir = "web" });
     b.getInstallStep().dependOn(&b.addInstallFileWithDir(wasm.getEmittedBin(), .{ .custom = "web" }, "figment.wasm").step);
     b.getInstallStep().dependOn(&b.addInstallFileWithDir(self_test_bin, .{ .custom = "web" }, "self-test.bin").step);
+    const assemble_demo = b.addRunArtifact(asm_exe);
+    assemble_demo.addFileArg(b.path("programs/demo.asm"));
+    b.getInstallStep().dependOn(&b.addInstallFileWithDir(assemble_demo.addOutputFileArg("demo.bin"), .{ .custom = "web" }, "demo.bin").step);
 
     const serve = b.addSystemCommand(&.{ "python3", "-m", "http.server", "-d" });
     serve.addDirectoryArg(.{ .relative = .{ .base = .install_prefix, .sub_path = "web" } });

@@ -413,7 +413,7 @@ fn runSelfTest(source: []const u8) !figment.Machine {
     const program = try assemble(testing.allocator, source, &diagnostic);
     defer testing.allocator.free(program);
     var m: figment.Machine = undefined;
-    m.reset();
+    m.reset(0);
     @memcpy(m.memory[0..program.len], program);
     for (0..100_000) |_| m.step();
     try testing.expectEqual(figment.State.halted, m.state);
@@ -433,4 +433,38 @@ test "the self-test program paints its fail color when a check fails" {
     try testing.expect(!std.mem.eql(u8, broken, self_test));
     const m = try runSelfTest(broken);
     for (m.memory[figment.screen_start..]) |pixel| try testing.expectEqual(0x08, pixel);
+}
+
+test "the self-test program fails when every random byte is the same" {
+    const broken = try std.mem.replaceOwned(u8, testing.allocator, self_test, "LD rB, [0x3F02]", "MOV rB, r9");
+    defer testing.allocator.free(broken);
+    try testing.expect(!std.mem.eql(u8, broken, self_test));
+    const m = try runSelfTest(broken);
+    for (m.memory[figment.screen_start..]) |pixel| try testing.expectEqual(0x08, pixel);
+}
+
+test "the demo ends every frame well inside the 100,000 instructions SPEC.md allows" {
+    var diagnostic: Diagnostic = .{};
+    const program = try assemble(testing.allocator, @embedFile("demo.asm"), &diagnostic);
+    defer testing.allocator.free(program);
+    var m: figment.Machine = undefined;
+    m.reset(0);
+    @memcpy(m.memory[0..program.len], program);
+    var most: usize = 0;
+    for (0..300) |i| {
+        m.memory[figment.keys] = if (i < 10) 0b1_1000 else @truncate(i);
+        m.frame_ended = false;
+        var n: usize = 0;
+        while (!m.frame_ended) : (n += 1) {
+            try testing.expect(n < 100_000);
+            m.step();
+            try testing.expectEqual(figment.State.running, m.state);
+        }
+        most = @max(most, n);
+        if (i == 9) {
+            try testing.expectEqual(7, m.memory[figment.screen_start + 64 * 128 + 74]);
+            try testing.expectEqual(48 + 74 / 4, m.memory[figment.beep]);
+        }
+    }
+    try testing.expect(most < 200);
 }

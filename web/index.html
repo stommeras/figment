@@ -23,6 +23,7 @@
     image-rendering: pixelated;
   }
   p { margin: 0; }
+  a { color: inherit; }
 </style>
 </head>
 <body>
@@ -30,11 +31,17 @@
 <p id="state">loading</p>
 <p id="error" role="alert"></p>
 <label>Program <input type="file" accept=".bin"></label>
+<p>Arrows, Z, X, Enter and Shift are the keys. <a href="?program=demo.bin">Demo</a> · <a href="?">Self-test</a></p>
 <script type="module">
 const memorySize = 0x8000;
 const screenStart = 0x4000;
 const screenSize = 128;
 const stepsPerFrame = 100000;
+const frameTime = 1000 / 60;
+const maxFramesPerTick = 4;
+const keysAddress = 0x3F00;
+const beepAddress = 0x3F01;
+const keyBits = { ArrowUp: 1, ArrowDown: 2, ArrowLeft: 4, ArrowRight: 8, z: 16, x: 32, Enter: 64, Shift: 128 };
 
 const stateText = document.querySelector("#state");
 const errorText = document.querySelector("#error");
@@ -46,6 +53,12 @@ const states = ["running", "halted", "faulted"];
 
 let wasm;
 let palette;
+let keys = 0;
+let lag = 0;
+let lastTime;
+let audio;
+let oscillator;
+let volume;
 
 function load(program) {
   if (program.length > memorySize) {
@@ -57,12 +70,51 @@ function load(program) {
   new Uint8Array(wasm.memory.buffer, wasm.memory_ptr(), program.length).set(program);
 }
 
-function frame() {
-  const state = states[wasm.step(stepsPerFrame)];
-  const screen = new Uint8Array(wasm.memory.buffer, wasm.memory_ptr() + screenStart, screenSize * screenSize);
+function startAudio() {
+  if (audio) return;
+  audio = new AudioContext();
+  oscillator = new OscillatorNode(audio, { type: "square" });
+  volume = new GainNode(audio, { gain: 0 });
+  oscillator.connect(volume).connect(audio.destination);
+  oscillator.start();
+}
+
+function setBeep(note) {
+  if (!audio) return;
+  const on = note >= 1 && note <= 127;
+  if (on) oscillator.frequency.setValueAtTime(440 * 2 ** ((note - 69) / 12), audio.currentTime);
+  volume.gain.setValueAtTime(on ? 0.1 : 0, audio.currentTime);
+}
+
+function keyBit(event) {
+  return keyBits[event.key.length === 1 ? event.key.toLowerCase() : event.key] ?? 0;
+}
+
+addEventListener("keydown", (event) => {
+  startAudio();
+  const bit = keyBit(event);
+  if (!bit) return;
+  event.preventDefault();
+  keys |= bit;
+});
+addEventListener("keyup", (event) => { keys &= ~keyBit(event); });
+addEventListener("blur", () => { keys = 0; });
+addEventListener("pointerdown", startAudio);
+
+function frame(now) {
+  lag = Math.min(lag + now - (lastTime ?? now), maxFramesPerTick * frameTime);
+  lastTime = now;
+  const machine = new Uint8Array(wasm.memory.buffer, wasm.memory_ptr(), memorySize);
+  let state = wasm.state();
+  for (; lag >= frameTime; lag -= frameTime) {
+    machine[keysAddress] = keys;
+    state = wasm.step(stepsPerFrame);
+  }
+  setBeep(state === 0 ? machine[beepAddress] : 0);
+  const screen = machine.subarray(screenStart);
   for (let i = 0; i < screen.length; i++) pixels[i] = palette[screen[i] & 15];
   context.putImageData(image, 0, 0);
-  if (stateText.textContent !== state) stateText.textContent = state;
+  if (stateText.textContent !== states[state]) stateText.textContent = states[state];
   requestAnimationFrame(frame);
 }
 
@@ -82,7 +134,8 @@ try {
   ({ exports: wasm } = (await WebAssembly.instantiateStreaming(fetchBytes("figment.wasm"))).instance);
   const paletteBytes = new Uint8Array(wasm.memory.buffer, wasm.palette_ptr(), 48);
   palette = Array.from({ length: 16 }, (_, i) => 0xff000000 | (paletteBytes[i * 3 + 2] << 16) | (paletteBytes[i * 3 + 1] << 8) | paletteBytes[i * 3]);
-  load(new Uint8Array(await (await fetchBytes("self-test.bin")).arrayBuffer()));
+  const program = new URLSearchParams(location.search).get("program") ?? "self-test.bin";
+  load(new Uint8Array(await (await fetchBytes(program)).arrayBuffer()));
   requestAnimationFrame(frame);
 } catch (error) {
   stateText.textContent = "";

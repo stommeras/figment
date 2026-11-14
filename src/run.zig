@@ -40,7 +40,7 @@ pub fn main(init: std.process.Init) !void {
         std.process.exit(1);
     };
     const m = try arena.create(figment.Machine);
-    m.reset();
+    m.reset(0);
     @memcpy(m.memory[0..program.len], program);
     for (0..max_steps) |_| {
         if (m.state != .running) break;
