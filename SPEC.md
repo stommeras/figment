@@ -118,6 +118,31 @@ Nothing detects overflow or underflow. `SP` wraps, and a stack that grows too fa
 
 An unknown opcode is the only fault. Register numbers and addresses cannot be out of range.
 
+## Assembly language (milestone 3)
+
+`zig build` installs the assembler as `zig-out/bin/figment-asm`. `figment-asm program.asm program.bin` reads a source file and writes the bytes that load at `0x0000`. On an error it prints `file:line: message`, writes nothing and exits with 1.
+
+A line holds an optional label, then an optional instruction or directive. `;` starts a comment that runs to the end of the line.
+
+- A label is a name followed by `:`. Its value is the address of the next byte the assembler emits. A name starts with a letter or `_` and goes on with letters, digits and `_`. Names are case-sensitive, a name is defined once, and a register name cannot be a label.
+- An instruction is a mnemonic from the instruction table followed by its operands, separated by commas. Mnemonics and register names ignore case.
+- A register is `r0` to `r9` or `rA` to `rF`.
+- A number is decimal, or hexadecimal with `0x`, binary with `0b` or octal with `0o`. `_` may separate digits.
+- An immediate `n` is a number from 0 to 255.
+- An address is a number from 0 to `0xFFFF` or a label. It is written bare after `JMP`, the conditional jumps and `CALL`, and in brackets after `LD` and `ST`, as in `LD r1, [0x1000]`.
+- A register pair is written `[h:l]`, as in `ST r1, [r2:r3]`.
+- `ADD` to `XOR` take a register or an immediate as the second operand, and the assembler picks the opcode from it.
+- `.byte n, n, ...` emits each number as one byte.
+
+The program must fit in 32,768 bytes.
+
+```
+        LDI r1, 2
+        LDI r2, 3
+        ADD r1, r2      ; r1 is 5
+        HLT
+```
+
 ## Screen (milestone 4)
 
 The screen is 128 by 128 pixels, one byte per pixel, row by row from the top left. The pixel at column `x` and row `y` is at address `0x4000 + y * 128 + x`. The host uses the low 4 bits of the byte as an index into a fixed palette of 16 colors and ignores the high 4 bits.

@@ -45,7 +45,18 @@ pub fn build(b: *std.Build) void {
     wasm_tests_module.addAnonymousImport("figment.wasm", .{ .root_source_file = wasm.getEmittedBin() });
     const wasm_tests = b.addTest(.{ .root_module = wasm_tests_module, .filters = test_filters });
 
+    const asm_module = b.createModule(.{
+        .root_source_file = b.path("src/asm.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "figment", .module = core }},
+    });
+    asm_module.addAnonymousImport("self-test.asm", .{ .root_source_file = b.path("programs/self-test.asm") });
+    b.installArtifact(b.addExecutable(.{ .name = "figment-asm", .root_module = asm_module }));
+    const asm_tests = b.addTest(.{ .root_module = asm_module, .filters = test_filters });
+
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&b.addRunArtifact(core_tests).step);
     test_step.dependOn(&b.addRunArtifact(wasm_tests).step);
+    test_step.dependOn(&b.addRunArtifact(asm_tests).step);
 }
