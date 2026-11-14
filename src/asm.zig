@@ -443,32 +443,74 @@ test "the self-test program fails when every random byte is the same" {
     for (m.memory[figment.screen_start..]) |pixel| try testing.expectEqual(0x08, pixel);
 }
 
-test "rogue keeps the player off the walls, goes down stairs and ends every frame in time" {
+/// Runs one frame and returns how many instructions it took. Fails if the machine
+/// stops or the frame goes past the 100,000 instructions SPEC.md allows.
+fn runFrame(m: *figment.Machine) !usize {
+    m.frame_ended = false;
+    var n: usize = 0;
+    while (!m.frame_ended) : (n += 1) {
+        try testing.expect(n < 100_000);
+        m.step();
+        try testing.expectEqual(figment.State.running, m.state);
+    }
+    return n;
+}
+
+// Where programs/rogue.asm keeps its state. Its header comment lists the same addresses.
+const rogue = struct {
+    const map = 0x3000;
+    const player_x = 0x3100;
+    const player_y = 0x3101;
+    const depth_tens = 0x3102;
+    const depth_ones = 0x3103;
+};
+
+test "rogue keeps the player off the walls and goes down stairs" {
+    var diagnostic: Diagnostic = .{};
+    const program = try assemble(testing.allocator, @embedFile("rogue.asm"), &diagnostic);
+    defer testing.allocator.free(program);
+    // draw_tile finds the glyphs at 0x0003, so the floor glyph must start there.
+    try testing.expectEqualSlices(u8, &.{ 0x00, 0x00, 0x00, 0x18, 0x18, 0x00, 0x00, 0x00 }, program[3..11]);
+    var m: figment.Machine = undefined;
+    m.reset(0);
+    @memcpy(m.memory[0..program.len], program);
+    var r: std.Random.DefaultPrng = .init(1);
+    for (0..20_000) |i| {
+        // A random arrow on every other frame, so each one is a fresh press.
+        m.memory[figment.keys] = if (i % 2 == 0) @as(u8, 1) << r.random().int(u2) else 0;
+        _ = try runFrame(&m);
+        const x = m.memory[rogue.player_x];
+        const y = m.memory[rogue.player_y];
+        try testing.expect(x < 16 and y < 15);
+        try testing.expect(m.memory[rogue.map + @as(usize, y) * 16 + x] != 1);
+    }
+    try testing.expect(m.memory[rogue.depth_tens] * 10 + m.memory[rogue.depth_ones] >= 20);
+}
+
+test "rogue stops counting the depth at 99" {
     var diagnostic: Diagnostic = .{};
     const program = try assemble(testing.allocator, @embedFile("rogue.asm"), &diagnostic);
     defer testing.allocator.free(program);
     var m: figment.Machine = undefined;
     m.reset(0);
     @memcpy(m.memory[0..program.len], program);
-    var most: usize = 0;
-    var r: std.Random.DefaultPrng = .init(1);
-    for (0..20_000) |i| {
-        // A random arrow on every other frame, so each one is a fresh press.
-        m.memory[figment.keys] = if (i % 2 == 0) @as(u8, 1) << r.random().int(u2) else 0;
-        m.frame_ended = false;
-        var n: usize = 0;
-        while (!m.frame_ended) : (n += 1) {
-            m.step();
-            try testing.expectEqual(figment.State.running, m.state);
-        }
-        most = @max(most, n);
-        const x = m.memory[0x3100];
-        const y = m.memory[0x3101];
-        try testing.expect(x < 16 and y < 15);
-        try testing.expect(m.memory[0x3000 + @as(usize, y) * 16 + x] != 1);
+    _ = try runFrame(&m);
+    _ = try runFrame(&m);
+    m.memory[rogue.depth_tens] = 9;
+    m.memory[rogue.depth_ones] = 8;
+    for (0..2) |_| {
+        // Put the stairs to the player's right, step onto them, and let the new floor draw.
+        const x = m.memory[rogue.player_x];
+        const y = m.memory[rogue.player_y];
+        m.memory[rogue.map + @as(usize, y) * 16 + x + 1] = 2;
+        m.memory[figment.keys] = 0b1000;
+        _ = try runFrame(&m);
+        m.memory[figment.keys] = 0;
+        _ = try runFrame(&m);
+        _ = try runFrame(&m);
+        try testing.expectEqual(9, m.memory[rogue.depth_tens]);
+        try testing.expectEqual(9, m.memory[rogue.depth_ones]);
     }
-    try testing.expect(most < 100_000);
-    try testing.expect(m.memory[0x3102] * 10 + m.memory[0x3103] > 1);
 }
 
 test "the demo ends every frame well inside the 100,000 instructions SPEC.md allows" {
@@ -481,14 +523,7 @@ test "the demo ends every frame well inside the 100,000 instructions SPEC.md all
     var most: usize = 0;
     for (0..300) |i| {
         m.memory[figment.keys] = if (i < 10) 0b1_1000 else @truncate(i);
-        m.frame_ended = false;
-        var n: usize = 0;
-        while (!m.frame_ended) : (n += 1) {
-            try testing.expect(n < 100_000);
-            m.step();
-            try testing.expectEqual(figment.State.running, m.state);
-        }
-        most = @max(most, n);
+        most = @max(most, try runFrame(&m));
         if (i == 9) {
             try testing.expectEqual(7, m.memory[figment.screen_start + 64 * 128 + 74]);
             try testing.expectEqual(48 + 74 / 4, m.memory[figment.beep]);

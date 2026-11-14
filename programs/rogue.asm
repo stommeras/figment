@@ -3,12 +3,15 @@
 ; The map is 16 by 15 tiles of 8 by 8 pixels, below a status line that shows the depth.
 ; It lives at 0x3000 + y * 16 + x, one byte per tile: 0 floor, 1 wall, 2 stairs.
 ; The other state is at 0x3100: player x, player y, depth tens, depth ones,
-; the keys held last frame, and the frames left on the current beep.
+; the keys held last frame, the frames left on the current beep, and the keys
+; held while a new floor was drawn. The rogue test in src/asm.zig reads the map
+; and the first four state bytes at these addresses.
 
         JMP main
 
 ; The glyphs are 8 bytes each, one bit per pixel, top row first. They start at 0x0003,
 ; right after the JMP, because draw_tile computes their address from that number.
+; The rogue test in src/asm.zig checks that the floor glyph is there.
         .byte 0x00, 0x00, 0x00, 0x18, 0x18, 0x00, 0x00, 0x00   ; 0 floor
         .byte 0xFE, 0xFE, 0xFE, 0x00, 0xEF, 0xEF, 0xEF, 0x00   ; 1 wall
         .byte 0x03, 0x03, 0x0F, 0x0F, 0x3F, 0x3F, 0xFF, 0xFF   ; 2 stairs
@@ -29,80 +32,79 @@ main:   LDI r0, 1
         CALL new_floor
 
 frame:  CALL tick_beep
-        LD r0, [0x3F00]         ; r0 = keys pressed this frame and not the last
+        LD rC, [0x3F00]         ; rC = arrows pressed this frame and not the last
+        LD r1, [0x3106]         ; with the keys held while a new floor was drawn
+        OR rC, r1
+        LDI r1, 0
+        ST r1, [0x3106]
         LD r1, [0x3104]
-        ST r0, [0x3104]
+        ST rC, [0x3104]
         XOR r1, 0xFF
-        AND r0, r1
+        AND rC, r1
+        AND rC, 0x0F
+        JZ done
         LD r7, [0x3100]
         LD r8, [0x3101]
-        MOV r1, r0
+        CALL draw_cell          ; erase the player, who is drawn again below
+        MOV r1, rC
         AND r1, 0b0001
         JZ no_up
         SUB r8, 1
         JMP try
-no_up:  MOV r1, r0
+no_up:  MOV r1, rC
         AND r1, 0b0010
         JZ no_down
         ADD r8, 1
         JMP try
 no_down:
-        MOV r1, r0
+        MOV r1, rC
         AND r1, 0b0100
         JZ no_left
         SUB r7, 1
         JMP try
 no_left:
-        MOV r1, r0
-        AND r1, 0b1000
-        JZ done
         ADD r7, 1
 
 ; The border is all wall, so a step never leaves the map.
 try:    CALL tile_at
-        MOV rC, r0
-        CMP rC, 1
+        CMP r0, 1
         JZ bump
-        PUSH r7
-        PUSH r8
-        LD r7, [0x3100]
-        LD r8, [0x3101]
-        CALL draw_cell
-        POP r8
-        POP r7
         ST r7, [0x3100]
         ST r8, [0x3101]
+        CMP r0, 2
+        JZ stairs
         CALL draw_player
-        CMP rC, 2
-        JNZ done
-        CALL descend
+        JMP done
+stairs: CALL descend
         LDI r0, 76
         LDI r1, 10
         CALL beep
         CALL new_floor
         JMP done
-bump:   LDI r0, 36
+bump:   CALL draw_player
+        LDI r0, 36
         LDI r1, 4
         CALL beep
 done:   ST r0, [0x3F03]
         JMP frame
 
-; Adds one to the depth, from 99 back to 00.
+; Adds one to the depth and stops at 99.
 descend:
         LD r0, [0x3103]
-        ADD r0, 1
-        CMP r0, 10
-        JNZ same_tens
-        LDI r0, 0
         LD r1, [0x3102]
+        CMP r0, 9
+        JNZ next_ones
+        CMP r1, 9
+        JZ deepest
         ADD r1, 1
-        CMP r1, 10
-        JNZ tens_ok
-        LDI r1, 0
-tens_ok:
         ST r1, [0x3102]
-same_tens:
+        LDI r0, 0
         ST r0, [0x3103]
+        RET
+next_ones:
+        ADD r0, 1
+        ST r0, [0x3103]
+deepest:
         RET
 
 ; Plays note r0 for r1 frames.
@@ -178,6 +180,9 @@ stepped:
 place:  LDI r0, 2
         CALL set_tile
         ST r0, [0x3F03]         ; draw in the next frame, which the drawing fills
+        CALL tick_beep
+        LD r0, [0x3F00]         ; the main loop reads this frame's keys next frame
+        ST r0, [0x3106]
         CALL draw_map
         CALL draw_player
         JMP draw_status
@@ -226,15 +231,12 @@ draw_cell:
         CMP r0, 2
         JZ stairs_colors
         LDI r1, 0x05
-        LDI r2, 0x00
         JMP cell
 wall_colors:
         LDI r1, 0x04
-        LDI r2, 0x00
         JMP cell
 stairs_colors:
         LDI r1, 0x0A
-        LDI r2, 0x00
 cell:   ADD r8, 1               ; the status line is screen row 0
         CALL draw_tile
         SUB r8, 1
@@ -246,7 +248,6 @@ draw_player:
         ADD r8, 1
         LDI r0, 3
         LDI r1, 0x07
-        LDI r2, 0x00
         JMP draw_tile
 
 draw_status:
@@ -254,7 +255,6 @@ draw_status:
         LDI r8, 0
         LDI r0, 2
         LDI r1, 0x0A
-        LDI r2, 0x00
         CALL draw_tile
         LDI r1, 0x07
         LDI r7, 1
@@ -266,10 +266,11 @@ draw_status:
         ADD r0, 4
         JMP draw_tile
 
-; Draws glyph r0 in color r1 on color r2 at screen tile r7, r8.
-; Keeps r0, r1, r2, r7, r8 and rC. Uses r3, r5, r6 and r9 to rB.
+; Draws glyph r0 in color r1 on black at screen tile r7, r8.
+; Keeps r0, r1, r7, r8 and rC. Uses r2, r3, r5, r6 and r9 to rB.
 ; The pixel loop is unrolled so a new floor draws within one frame.
 draw_tile:
+        LDI r2, 0x00            ; the background
         LDI r9, 0               ; r9:rA = 0x0003 + r0 * 8
         MOV rA, r0
         SHL rA
