@@ -1015,6 +1015,7 @@ const tangle = struct {
     const gap_moves = constant(tangle_source, "GAP_MOVES");
     const steps = constant(tangle_source, "STEPS");
     const turn_steps = constant(tangle_source, "TURN_STEPS");
+    const speed = constant(tangle_source, "SPEED");
     const navy = constant(tangle_source, "NAVY");
     const gray = constant(tangle_source, "GRAY");
     const yellow = constant(tangle_source, "YELLOW");
@@ -1090,11 +1091,11 @@ fn runFrames(m: *figment.Machine, keys: usize, frames: usize) !void {
     m.memory[figment.keys] = 0;
 }
 
-test "tangle steers by a table of round(127 * sin) over 32 directions" {
+test "tangle steers by a table of round(SPEED * sin) over 32 directions" {
     var expected: [40]u8 = undefined;
     for (&expected, 0..) |*byte, i| {
         const angle = 2 * std.math.pi * @as(f64, @floatFromInt(i)) / 32;
-        byte.* = @bitCast(@as(i8, @intFromFloat(@round(127 * @sin(angle)))));
+        byte.* = @bitCast(@as(i8, @intFromFloat(@round(@as(f64, @floatFromInt(tangle.speed)) * @sin(angle)))));
     }
     var diagnostic: Diagnostic = .{};
     const program = try assemble(testing.allocator, tangle_source, &diagnostic);
@@ -1135,7 +1136,7 @@ test "tangle moves a head under half a pixel a step and leaves an unbroken line"
     try setUpRound(&m, 40, 60, 0);
     const frames = 64;
     try runFrames(&m, 0, frames);
-    const x = 40 + (0x80 + 127 * tangle.steps * frames) / 256;
+    const x = 40 + (0x80 + tangle.speed * tangle.steps * frames) / 256;
     try testing.expectEqual(x, tangleField(&m, 0, "CUR_X").*);
     try testing.expectEqual(60, tangleField(&m, 0, "CUR_Y").*);
     for (40..x + 1) |column| try testing.expectEqual(tangle.yellow, screenPixel(&m, column, 60).*);
